@@ -1,0 +1,35 @@
+{
+  "name": "next-postgres",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --turbopack",
+    "build": "next build && tsc src/lib/migrate.ts --outDir ./dist --esModuleInterop --skipLibCheck --module NodeNext",
+    "start": "node .next/standalone/server.js",
+    "test": "npm run test:unit",
+    "test:unit": "vitest run --root . tests/contract.test.ts",
+    "test:integration": "bash tests/run-integration.sh",
+    "typecheck": "tsc --noEmit",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx src/lib/migrate.ts"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.2",
+    "next": "^16.3.1",
+    "postgres": "^3.4.4",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "autoprefixer": "^10.4.19",
+    "drizzle-kit": "^0.31.10",
+    "postcss": "^8.4.39",
+    "tailwindcss": "^3.4.4",
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.3",
+    "vitest": "^3.0.0"
+  }
+}

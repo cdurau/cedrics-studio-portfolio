@@ -1,0 +1,10 @@
+alembic==1.16.5
+fastapi==0.128.8
+httpx==0.28.1
+psycopg==3.2.13
+pydantic==2.13.4
+pydantic-settings==2.11.0
+pytest==8.4.2
+pytest-asyncio==1.2.0
+pytest-cov==7.1.0
+uvicorn==0.39.0

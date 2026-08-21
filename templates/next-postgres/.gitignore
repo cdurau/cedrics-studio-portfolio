@@ -1,0 +1,9 @@
+node_modules
+.next
+.env
+.DS_Store
+dist
+*.tsbuildinfo
+drizzle-fail
+drizzle_bak
+test-temp-*

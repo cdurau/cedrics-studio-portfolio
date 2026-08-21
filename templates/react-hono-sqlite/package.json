@@ -1,0 +1,45 @@
+{
+  "name": "react-hono-sqlite",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "echo 'Run dev:server and dev:client in separate terminals' && exit 1",
+    "dev:server": "tsx --watch source/server/server.ts",
+    "dev:client": "vite",
+    "build": "vite build && tsc -p tsconfig.server.json",
+    "start": "node dist/server/server/server.js",
+    "test": "npm run test:unit",
+    "test:unit": "vitest run tests/auth.test.ts tests/contract.test.ts",
+    "test:integration": "bash tests/run-integration.sh",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx source/server/migrate.ts"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.14.0",
+    "better-sqlite3": "^13.0.3",
+    "drizzle-orm": "^0.45.2",
+    "hono": "^4.13.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^6.1.0",
+    "autoprefixer": "^10.4.19",
+    "drizzle-kit": "^0.31.10",
+    "postcss": "^8.4.39",
+    "tailwindcss": "^3.4.4",
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.3",
+    "vite": "^8.2.2",
+    "vitest": "^3.0.0"
+  }
+}

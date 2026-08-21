@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Python FastAPI App</title>
+    <!-- Use relative paths or unstyled for simplicity -->
+    <style>
+        body { font-family: system-ui, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
+        .entry { border: 1px solid #ccc; padding: 10px; margin-bottom: 10px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <h1>Welcome, {{ user.name or user.username or "Guest" }}</h1>
+
+    <form action="api/entries" method="POST" id="entryForm">
+        <input type="text" name="content" placeholder="Enter something..." required>
+        <button type="submit">Add Entry</button>
+    </form>
+
+    <h2>Entries</h2>
+    <div id="entriesList">
+        {% for entry in entries %}
+        <div class="entry">
+            <p>{{ entry.content }} <small>— {{ entry.author }}</small></p>
+        </div>
+        {% else %}
+        <p>No entries found.</p>
+        {% endfor %}
+    </div>
+
+    <script>
+        document.getElementById('entryForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            const content = formData.get('content');
+
+            // Relative fetch path for path-safe routing
+            const res = await fetch('api/entries', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ content })
+            });
+
+            if(res.ok) {
+                window.location.reload();
+            }
+        });
+    </script>
+</body>
+</html>
