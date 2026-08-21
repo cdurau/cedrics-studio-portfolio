@@ -36,6 +36,12 @@ describe("Contract Verification Tests", () => {
     expect(nginxConf).toMatch(/try_files \$uri =404;/);
   });
 
+  it("Nginx listens on IPv4 and IPv6 so localhost health probes (::1) succeed", () => {
+    const nginxConf = readFileSync(join(process.cwd(), "nginx/default.conf"), "utf-8");
+    expect(nginxConf).toMatch(/listen\s+3000\s*;/);
+    expect(nginxConf).toMatch(/listen\s+\[::\]:3000\s*;/);
+  });
+
   it("Has no React, Hono, backend, or DB dependency", () => {
     const pkgJson = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf-8"));
     const deps = { ...pkgJson.dependencies, ...pkgJson.devDependencies };
