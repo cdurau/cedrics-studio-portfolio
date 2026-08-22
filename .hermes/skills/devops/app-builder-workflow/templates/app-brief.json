@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "schema": 1,
+  "app": {
+    "name": "Shopping List",
+    "slug": "shopping-list",
+    "purpose": "Shared shopping list for iPhone and PC",
+    "core_features": [
+      "Add/remove items",
+      "Mark items as bought",
+      "Real-time sync between devices"
+    ],
+    "requirements": {
+      "shared_state": true,
+      "python_needed": false,
+      "ssr_rsc_needed": false,
+      "sqlite_sufficient": true,
+      "path_safe": true,
+      "own_origin_needed": false,
+      "forward_auth_sufficient": true,
+      "shadcn_needed": false,
+      "backend_needed": true
+    },
+    "ui_requirements": {
+      "mobile_first": true,
+      "pwa": true,
+      "framework": "react",
+      "styling": "tailwind"
+    },
+    "tests": {
+      "unit": true,
+      "integration": false,
+      "e2e_browser": false,
+      "health_check": true,
+      "persistence_check": true
+    },
+    "acceptance_gates": [
+      "GitHub Actions success",
+      "Coolify running:healthy",
+      "/healthz returns {\"ok\":true}",
+      "Authentik redirect for unauthenticated",
+      "Authenticated access works",
+      "StripPrefix routing correct",
+      "Assets load correctly",
+      "SQLite persistence across redeploy"
+    ],
+    "non_goals": [
+      "No multi-user roles",
+      "No external API integrations",
+      "No file uploads",
+      "No push notifications"
+    ],
+    "allowed_external_actions": []
+  },
+  "profile_selection": {
+    "profile": "react-hono-sqlite",
+    "rationale": "Shared state needed, no Python, no SSR, SQLite sufficient for low concurrency, path-safe, no origin isolation needed, ForwardAuth sufficient, no shadcn needed, backend required for sync."
+  },
+  "orchestration": {
+    "kanban_task_id": null,
+    "executor_routing": "agy-gemini-3.7-flash-high",
+    "senior_review_required": false
+  },
+  "metadata": {
+    "created_at": "2026-08-22T14:00:00Z",
+    "created_by": "qwen3.7-plus"
+  }
+}
