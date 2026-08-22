@@ -61,11 +61,15 @@ def make_reqs(**overrides) -> AppRequirements:
 
 
 # =============================================================================
-# 1. Positive Tests for All 6 Profiles
+# 1. Behavior Coverage for All 6 Canonical Profiles
 # =============================================================================
 
-class TestProfileSelectionPositiveCases:
-    """Test positive selection logic for each canonical profile."""
+class TestProfileSelectionBehaviorCoverage:
+    """Test behavior coverage for each canonical profile (F7: honest naming).
+    
+    Note: next-postgres is not directly selectable in Phase 10/11 (requires subdomain routing),
+    so it correctly escalates. This tests the escalation path, not positive selection.
+    """
 
     def test_static_vite_selected_when_no_shared_state_no_python(self):
         reqs = make_reqs(
@@ -378,7 +382,165 @@ class TestDeterminism:
 
 
 # =============================================================================
-# 7. CLI Subcommand Tests
+# 7. Senior Review F1-F4 Regression Tests
+# =============================================================================
+
+class TestSeniorReviewF1F4Regression:
+    """Regression tests for Senior Review F1-F4 findings (2026-01-10)."""
+
+    def test_f1_ssr_with_shared_state_false_escalates(self):
+        """F1: ssr_rsc_needed=true with shared_state=false must escalate, not select static-vite."""
+        reqs = make_reqs(
+            shared_state=False,
+            ssr_rsc_needed=True,
+            backend_needed=True,
+        )
+        result = select_profile(reqs)
+        assert result.startswith("ESCALATE_TO_CEDRIC:")
+        assert "ssr_rsc_needed" in result or "subdomain" in result
+
+    def test_f2_backend_needed_true_with_shared_state_false_escalates(self):
+        """F2: backend_needed=true with shared_state=false must escalate (stateless backend not supported)."""
+        reqs = make_reqs(
+            shared_state=False,
+            backend_needed=True,
+        )
+        result = select_profile(reqs)
+        assert result.startswith("ESCALATE_TO_CEDRIC:")
+        assert "backend_needed" in result or "stateless" in result
+
+    def test_f3_forward_auth_sufficient_false_escalates(self):
+        """F3: forward_auth_sufficient=false must escalate (frozen ForwardAuth is only auth path)."""
+        reqs = make_reqs(
+            forward_auth_sufficient=False,
+            shared_state=True,
+            backend_needed=True,
+        )
+        result = select_profile(reqs)
+        assert result.startswith("ESCALATE_TO_CEDRIC:")
+        assert "forward_auth" in result or "auth" in result
+
+    def test_f4_python_and_ssr_combination_escalates(self):
+        """F4: python_needed=true with ssr_rsc_needed=true must escalate (no canonical profile)."""
+        reqs = make_reqs(
+            python_needed=True,
+            ssr_rsc_needed=True,
+            shared_state=True,
+            backend_needed=True,
+        )
+        result = select_profile(reqs)
+        assert result.startswith("ESCALATE_TO_CEDRIC:")
+        assert "python" in result.lower() or "ssr" in result.lower() or "combination" in result.lower()
+
+    def test_f5_apprequirements_instance_validation(self):
+        """F5: AppRequirements instances must be validated (not just dicts)."""
+        # This should raise ValueError for contradiction
+        with pytest.raises(ValueError, match="shared_state.*backend_needed"):
+            reqs = AppRequirements(
+                shared_state=True,
+                backend_needed=False,
+                python_needed=False,
+                ssr_rsc_needed=False,
+                sqlite_sufficient=True,
+                path_safe=True,
+                own_origin_needed=False,
+                forward_auth_sufficient=True,
+                shadcn_needed=False,
+            )
+            evaluate_requirements(reqs)
+
+    def test_f5_cli_contradictory_inputs_fail_closed(self):
+        """F5: CLI evaluate with contradictory inputs must fail closed."""
+        cmd = [
+            sys.executable,
+            str(SCRIPTS_DIR / "select_profile.py"),
+            "evaluate",
+            "--shared-state",
+            "--no-backend-needed",
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        assert result.returncode != 0
+        assert "error" in result.stderr.lower() or "contradiction" in result.stderr.lower()
+
+    def test_f6_profile_selection_consistency_mismatch_detected(self):
+        """F6: profile_selection mismatch with computed profile must be detected."""
+        brief_data = {
+            "schema": 1,
+            "app": {
+                "name": "Test App",
+                "slug": "test-app",
+                "purpose": "Test",
+                "requirements": {
+                    "shared_state": True,
+                    "python_needed": False,
+                    "ssr_rsc_needed": False,
+                    "sqlite_sufficient": True,
+                    "path_safe": True,
+                    "own_origin_needed": False,
+                    "forward_auth_sufficient": True,
+                    "shadcn_needed": False,
+                    "backend_needed": True,
+                },
+            },
+            "profile_selection": {
+                "profile": "react-hono-postgres",  # Wrong! Should be react-hono-sqlite
+                "rationale": "Wrong profile selected",
+            },
+            "orchestration": {
+                "kanban_task_id": None,
+                "executor_routing": "agy-gemini-3.7-flash-high",
+                "senior_review_required": False,
+            },
+            "metadata": {
+                "created_at": "2026-01-10T12:00:00Z",
+                "created_by": "test",
+            },
+        }
+        is_valid, errors = validate_app_brief(brief_data)
+        assert not is_valid
+        assert any("profile" in e.lower() and ("mismatch" in e.lower() or "does not match" in e.lower()) for e in errors)
+
+    def test_f6_escalated_brief_with_profile_is_invalid(self):
+        """F6: Escalated brief with non-null profile must be invalid."""
+        brief_data = {
+            "schema": 1,
+            "app": {
+                "name": "Test App",
+                "slug": "test-app",
+                "purpose": "Test",
+                "requirements": {
+                    "shared_state": False,
+                    "python_needed": False,
+                    "ssr_rsc_needed": True,  # Will escalate
+                    "sqlite_sufficient": False,
+                    "path_safe": True,
+                    "own_origin_needed": False,
+                    "forward_auth_sufficient": True,
+                    "shadcn_needed": False,
+                    "backend_needed": True,
+                },
+            },
+            "profile_selection": {
+                "profile": "next-postgres",  # Invalid! Should be null for escalated
+                "rationale": "Escalated but profile set",
+            },
+            "orchestration": {
+                "kanban_task_id": None,
+                "executor_routing": "agy-gemini-3.7-flash-high",
+                "senior_review_required": False,
+            },
+            "metadata": {
+                "created_at": "2026-01-10T12:00:00Z",
+                "created_by": "test",
+            },
+        }
+        is_valid, errors = validate_app_brief(brief_data)
+        assert not is_valid
+        assert any("escalated" in e.lower() and "profile" in e.lower() for e in errors)
+
+
+# =============================================================================
+# 8. CLI Subcommand Tests
 # =============================================================================
 
 class TestCLICommands:

@@ -96,6 +96,23 @@ class ProfileSelectionResult:
         return asdict(self)
 
 
+def validate_requirements_instance(req: AppRequirements) -> None:
+    """Fail-closed validation of an AppRequirements instance against canonical invariants."""
+    # Contradiction check: shared_state requires a backend
+    if req.shared_state and not req.backend_needed:
+        raise ValueError(
+            "Contradictory requirements: 'shared_state' is True but 'backend_needed' is False "
+            "(shared/server-side state strictly requires a backend service)."
+        )
+
+    # Contradiction check: python_needed requires a backend
+    if req.python_needed and not req.backend_needed:
+        raise ValueError(
+            "Contradictory requirements: 'python_needed' is True but 'backend_needed' is False "
+            "(Python libraries strictly require a backend service)."
+        )
+
+
 def validate_requirements_dict(data: Dict[str, Any]) -> None:
     """Fail-closed validation of requirements dictionary against canonical dimensions."""
     if not isinstance(data, dict):
@@ -134,15 +151,17 @@ def _get_field(requirements: Union[AppRequirements, Dict[str, Any], Any], key: s
 
 def select_profile(requirements: Union[AppRequirements, Dict[str, Any], Any]) -> str:
     """
-    Deterministic Profile Selection Algorithm (Remediated Phase 11 / P11-M1).
+    Deterministic Profile Selection Algorithm (Remediated Phase 11 / Senior Review F1-F4).
 
-    Order of evaluation:
-    1. Routing escalations (own_origin_needed, path_safe)
-    2. Python libraries (python_needed checked BEFORE shared_state)
-    3. Shared/server-side state (shared_state)
-    4. SSR/RSC (ssr_rsc_needed -> escalate next-postgres)
-    5. SQLite vs PostgreSQL (sqlite_sufficient)
-    6. Default: react-hono-postgres
+    Canonical gate order (all gates escalate, deterministic fixed order):
+    1. own_origin_needed=true → escalate
+    2. path_safe=false → escalate
+    3. forward_auth_sufficient=false → escalate (NEW, F3)
+    4. ssr_rsc_needed=true → escalate, message conditional on python_needed (F1/F4)
+    5. python_needed → fastapi/service
+    6. not shared_state → static-vite (only if backend_needed=false, else escalate) (F2)
+    7. sqlite_sufficient → react-hono-sqlite
+    8. default react-hono-postgres
 
     Returns:
         Profile string name (e.g. 'react-hono-sqlite') or escalation message starting with 'ESCALATE_TO_CEDRIC:'
@@ -150,39 +169,51 @@ def select_profile(requirements: Union[AppRequirements, Dict[str, Any], Any]) ->
     # Helper getters supporting dicts and objects
     own_origin = _get_field(requirements, "own_origin_needed", False)
     path_safe = _get_field(requirements, "path_safe", True)
+    forward_auth = _get_field(requirements, "forward_auth_sufficient", True)
     python_needed = _get_field(requirements, "python_needed", False)
     shared_state = _get_field(requirements, "shared_state", False)
     ssr_rsc_needed = _get_field(requirements, "ssr_rsc_needed", False)
     sqlite_sufficient = _get_field(requirements, "sqlite_sufficient", False)
+    backend_needed = _get_field(requirements, "backend_needed", False)
 
-    # Escalation Leaf 1: own_origin_needed (no subdomain support in Phase 10/11)
+    # Gate 1: own_origin_needed (no subdomain support in Phase 10/11)
     if own_origin:
         return "ESCALATE_TO_CEDRIC: own_origin_needed is true — subdomain routing not available in Phase 10/11"
 
-    # Escalation Leaf 2: path_safe (only path-based routing is supported)
+    # Gate 2: path_safe (only path-based routing is supported)
     if not path_safe:
         return "ESCALATE_TO_CEDRIC: path_safe is false — only path-based routing is supported in Phase 10/11"
 
-    # Dimension 2: Python-specific libraries? (BEFORE shared_state!)
+    # Gate 3: forward_auth_sufficient (F3: frozen ForwardAuth is only auth path)
+    if not forward_auth:
+        return "ESCALATE_TO_CEDRIC: forward_auth_sufficient is false — frozen ForwardAuth is the only auth path in Phase 10/11"
+
+    # Gate 4: ssr_rsc_needed (F1/F4: unconditional escalation, message conditional)
+    if ssr_rsc_needed:
+        if python_needed:
+            return "ESCALATE_TO_CEDRIC: Python + SSR/RSC combination has no canonical profile (catalog conflict)"
+        else:
+            return "ESCALATE_TO_CEDRIC: next-postgres requires subdomain routing — not available in Phase 10/11"
+
+    # Eligibility 5: Python-specific libraries (BEFORE shared_state)
     if python_needed:
         if shared_state:
             return "python-fastapi"
         else:
             return "python-service"
 
-    # Dimension 1: Shared/Server-side state?
+    # Eligibility 6: Shared/Server-side state (F2: backend_needed gate)
     if not shared_state:
-        return "static-vite"
+        if backend_needed:
+            return "ESCALATE_TO_CEDRIC: backend_needed=true but shared_state=false has no canonical profile (stateless backend)"
+        else:
+            return "static-vite"
 
-    # Dimension 3: SSR/RSC needed?
-    if ssr_rsc_needed:
-        return "ESCALATE_TO_CEDRIC: next-postgres requires subdomain routing — not available in Phase 10/11"
-
-    # Dimension 4: SQLite sufficient?
+    # Eligibility 7: SQLite sufficient?
     if sqlite_sufficient:
         return "react-hono-sqlite"
 
-    # Default: react-hono-postgres
+    # Default 8: react-hono-postgres
     return "react-hono-postgres"
 
 
@@ -194,6 +225,7 @@ def evaluate_requirements(requirements: Union[AppRequirements, Dict[str, Any]]) 
         validate_requirements_dict(requirements)
         req_obj = AppRequirements.from_dict(requirements)
     elif isinstance(requirements, AppRequirements):
+        validate_requirements_instance(requirements)  # F5: validate instances too
         req_obj = requirements
     else:
         raise TypeError(f"Expected dict or AppRequirements, got {type(requirements).__name__}")
@@ -296,7 +328,7 @@ def derive_app_manifest(app_brief_data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def validate_app_brief(brief_data: Dict[str, Any]) -> Tuple[bool, List[str]]:
-    """Validate app-brief.json structure, required fields, and dimension consistency."""
+    """Validate app-brief.json structure, required fields, dimension consistency, and profile_selection consistency."""
     errors: List[str] = []
 
     if not isinstance(brief_data, dict):
@@ -322,7 +354,54 @@ def validate_app_brief(brief_data: Dict[str, Any]) -> Tuple[bool, List[str]]:
             except Exception as e:
                 errors.append(f"Invalid requirements: {e}")
 
+    # Validate profile_selection consistency (F6)
+    ps = brief_data.get("profile_selection")
+    if isinstance(ps, dict) and isinstance(app, dict) and isinstance(app.get("requirements"), dict):
+        try:
+            computed = evaluate_requirements(app["requirements"])
+            declared_profile = ps.get("profile")
+            if computed.is_escalated:
+                if declared_profile is not None:
+                    errors.append(
+                        f"profile_selection.profile should be null for escalated requirements, got '{declared_profile}'"
+                    )
+            else:
+                if declared_profile != computed.profile:
+                    errors.append(
+                        f"profile_selection.profile '{declared_profile}' does not match computed profile '{computed.profile}'"
+                    )
+        except Exception as e:
+            errors.append(f"Cannot validate profile_selection consistency: {e}")
+
     return len(errors) == 0, errors
+
+
+def validate_app_brief_against_schema(brief_path: Path) -> Tuple[bool, List[str]]:
+    """Validate app-brief.json against the JSON Schema (F6)."""
+    import json as _json
+
+    schema_path = brief_path.parent / "app-brief.schema.json"
+    if not schema_path.exists():
+        return False, [f"Schema file not found: {schema_path}"]
+
+    try:
+        with open(brief_path, "r", encoding="utf-8") as f:
+            brief_data = _json.load(f)
+        with open(schema_path, "r", encoding="utf-8") as f:
+            schema_data = _json.load(f)
+    except Exception as e:
+        return False, [f"Failed to load JSON: {e}"]
+
+    try:
+        import jsonschema
+        validator = jsonschema.Draft202012Validator(schema_data)
+        validation_errors = list(validator.iter_errors(brief_data))
+        if validation_errors:
+            return False, [f"Schema validation error: {e.message}" for e in validation_errors]
+        return True, []
+    except ImportError:
+        # jsonschema not installed; fall back to structural validation
+        return validate_app_brief(brief_data)
 
 
 def main() -> None:
@@ -339,6 +418,7 @@ def main() -> None:
     eval_parser.add_argument("--no-path-safe", action="store_false", dest="path_safe")
     eval_parser.add_argument("--own-origin-needed", action="store_true", default=False)
     eval_parser.add_argument("--forward-auth-sufficient", action="store_true", default=True)
+    eval_parser.add_argument("--no-forward-auth-sufficient", action="store_false", dest="forward_auth_sufficient", help="F3: ForwardAuth insufficient (escalation gate)")
     eval_parser.add_argument("--shadcn-needed", action="store_true", default=False)
     eval_parser.add_argument("--backend-needed", action="store_true", default=False)
 

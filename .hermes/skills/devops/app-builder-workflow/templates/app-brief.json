@@ -1,6 +1,6 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "schema": 1,
+  "_comment": "This is an instance document. For schema validation, see app-brief.schema.json",
   "app": {
     "name": "Shopping List",
     "slug": "shopping-list",
