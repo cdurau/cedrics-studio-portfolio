@@ -1,720 +1,492 @@
-#!/usr/bin/env python3
-"""
-test_scaffold_template.py — Tests for Portable Core Template Scaffolding.
-
-Covers:
-- All 6 canonical profiles (success cases)
-- Invalid profile
-- Invalid slug/path
-- Existing target (no overwrite)
-- Scope escape / traversal
-- Fail-closed behavior
-- app.yaml generation
-- No real production apps modified
-"""
-
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import pytest
 
-# Ensure scripts dir is on path
-SCRIPT_DIR = Path(__file__).parent
-sys.path.insert(0, str(SCRIPT_DIR))
+SCRIPT_DIR = Path(__file__).resolve().parent
+SKILL_DIR = SCRIPT_DIR.parent
+TEMPLATES_DIR = SKILL_DIR / "templates"
+PLANNING_REPO = SCRIPT_DIR.parents[4]
 
-from scaffold_template import (
+sys.path.insert(0, str(SCRIPT_DIR))
+from scaffold_template import (  # noqa: E402
+    EXCLUDED_DIR_NAMES,
     SUPPORTED_PROFILES,
     ScaffoldRequest,
     _copy_template,
     _generate_app_yaml,
     _should_exclude,
     scaffold,
-    validate_slug,
-    validate_profile,
     validate_paths,
+    validate_profile,
+    validate_slug,
 )
 
-# Real planning repo (read-only source for tests)
-PLANNING_REPO = Path("/Users/owner/Projekte/lokales-ki-studio")
 
-
-@pytest.fixture
-def runtime_repo(tmp_path: Path) -> Path:
-    """Create a minimal runtime repo structure with apps/ directory."""
-    rr = tmp_path / "runtime-repo"
-    rr.mkdir()
-    (rr / "apps").mkdir()
-    return rr
+def make_planning(tmp_path: Path) -> Path:
+    pr = tmp_path / "planning"
+    templates = pr / "templates"
+    templates.mkdir(parents=True)
+    (templates / "CONTRACTS.md").write_text("contract", encoding="utf-8")
+    for profile in SUPPORTED_PROFILES:
+        root = templates / profile
+        (root / "source").mkdir(parents=True)
+        (root / "README.md").write_text(f"# {profile}\n", encoding="utf-8")
+        (root / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+        (root / "source" / "main.txt").write_text(profile, encoding="utf-8")
+        (root / "node_modules").mkdir()
+        (root / "node_modules" / "ignored.txt").write_text("ignored", encoding="utf-8")
+        (root / "__pycache__").mkdir()
+        (root / "__pycache__" / "ignored.pyc").write_bytes(b"x")
+        (root / ".DS_Store").write_text("ignored", encoding="utf-8")
+    return pr
 
 
 @pytest.fixture
 def planning_repo(tmp_path: Path) -> Path:
-    """Create a minimal planning repo with all 6 profile templates."""
-    pr = tmp_path / "planning-repo"
-    pr.mkdir()
-    templates_dir = pr / "templates"
-    templates_dir.mkdir()
+    return make_planning(tmp_path)
 
+
+@pytest.fixture
+def runtime_repo(tmp_path: Path) -> Path:
+    rr = tmp_path / "runtime"
+    (rr / "apps").mkdir(parents=True)
+    return rr
+
+
+@pytest.mark.parametrize("slug", ["ab", "shopping", "my-app", "app-v2", "a" * 48])
+def test_valid_slugs(slug):
+    assert validate_slug(slug) == (True, "")
+
+
+@pytest.mark.parametrize(
+    "slug",
+    ["", "a", "A-app", "my_app", "my app", "-app", "app-", "app--two", "../etc", "foo/bar", "a" * 49],
+)
+def test_invalid_slugs(slug):
+    ok, error = validate_slug(slug)
+    assert not ok
+    assert error
+
+
+def test_all_six_profiles_are_canonical():
+    assert SUPPORTED_PROFILES == (
+        "static-vite",
+        "react-hono-sqlite",
+        "react-hono-postgres",
+        "next-postgres",
+        "python-fastapi",
+        "python-service",
+    )
     for profile in SUPPORTED_PROFILES:
-        profile_dir = templates_dir / profile
-        profile_dir.mkdir()
-        # Create minimal template files
-        (profile_dir / "README.md").write_text(f"# {profile}\nTest template.\n")
-        (profile_dir / "Dockerfile").write_text(f"FROM scratch\n# {profile}\n")
-        (profile_dir / "app-source.txt").write_text(f"source for {profile}")
-
-        # Create a subdirectory with files
-        sub = profile_dir / "source"
-        sub.mkdir()
-        (sub / "main.txt").write_text(f"main source for {profile}")
-
-        # Create excluded directories (should NOT be copied)
-        nm = profile_dir / "node_modules"
-        nm.mkdir()
-        (nm / "should-not-copy.txt").write_text("EXCLUDED")
-
-        cache = profile_dir / "__pycache__"
-        cache.mkdir()
-        (cache / "should-not-copy.pyc").write_text("EXCLUDED")
-
-        # Create excluded files
-        (profile_dir / "should-not-copy.pyc").write_text("EXCLUDED")
-        (profile_dir / ".DS_Store").write_text("EXCLUDED")
-
-    return pr
+        assert validate_profile(profile) == (True, "")
 
 
-# ============================================================
-# Slug validation tests
-# ============================================================
+@pytest.mark.parametrize("profile", ["", "unknown", "Static-Vite", "../static-vite"])
+def test_invalid_profile(profile):
+    ok, error = validate_profile(profile)
+    assert not ok
+    assert "supported" in error
 
 
-class TestSlugValidation:
-    def test_valid_slug_simple(self):
-        ok, err = validate_slug("my-app")
-        assert ok is True
-        assert err == ""
-
-    def test_valid_slug_single_word(self):
-        ok, err = validate_slug("shopping")
-        assert ok is True
-
-    def test_valid_slug_with_numbers(self):
-        ok, err = validate_slug("app-v2")
-        assert ok is True
-
-    def test_valid_slug_min_length(self):
-        ok, err = validate_slug("ab")
-        assert ok is True
-
-    def test_valid_slug_max_length(self):
-        ok, err = validate_slug("a" * 48)
-        assert ok is True
-
-    def test_invalid_slug_empty(self):
-        ok, err = validate_slug("")
-        assert ok is False
-        assert "empty" in err
-
-    def test_invalid_slug_too_short(self):
-        ok, err = validate_slug("a")
-        assert ok is False
-        assert "too short" in err
-
-    def test_invalid_slug_too_long(self):
-        ok, err = validate_slug("a" * 49)
-        assert ok is False
-        assert "too long" in err
-
-    def test_invalid_slug_uppercase(self):
-        ok, err = validate_slug("MyApp")
-        assert ok is False
-
-    def test_invalid_slug_special_chars(self):
-        ok, err = validate_slug("my_app!")
-        assert ok is False
-
-    def test_invalid_slug_starts_with_hyphen(self):
-        ok, err = validate_slug("-my-app")
-        assert ok is False
-
-    def test_invalid_slug_ends_with_hyphen(self):
-        ok, err = validate_slug("my-app-")
-        assert ok is False
-
-    def test_invalid_slug_consecutive_hyphens(self):
-        ok, err = validate_slug("my--app")
-        assert ok is False
-        assert "consecutive hyphens" in err
-
-    def test_invalid_slug_underscore(self):
-        ok, err = validate_slug("my_app")
-        assert ok is False
-
-    def test_invalid_slug_spaces(self):
-        ok, err = validate_slug("my app")
-        assert ok is False
-
-    def test_invalid_slug_traversal(self):
-        ok, err = validate_slug("../etc")
-        assert ok is False
+def test_validate_paths_happy(planning_repo, runtime_repo):
+    ok, errors = validate_paths(ScaffoldRequest("static-vite", "test-app", planning_repo, runtime_repo))
+    assert ok and not errors
 
 
-# ============================================================
-# Profile validation tests
-# ============================================================
+def test_validate_paths_requires_distinct_repos(planning_repo):
+    (planning_repo / "apps").mkdir()
+    ok, errors = validate_paths(ScaffoldRequest("static-vite", "test-app", planning_repo, planning_repo))
+    assert not ok
+    assert "distinct" in errors[0]
 
 
-class TestProfileValidation:
-    def test_valid_all_profiles(self):
-        for profile in SUPPORTED_PROFILES:
-            ok, err = validate_profile(profile)
-            assert ok is True, f"profile {profile} should be valid"
-
-    def test_invalid_profile_unknown(self):
-        ok, err = validate_profile("unknown-profile")
-        assert ok is False
-        assert "not supported" in err
-
-    def test_invalid_profile_empty(self):
-        ok, err = validate_profile("")
-        assert ok is False
-
-    def test_invalid_profile_case_sensitive(self):
-        ok, err = validate_profile("Static-Vite")
-        assert ok is False
+def test_missing_planning_repo_fails(tmp_path, runtime_repo):
+    ok, errors = validate_paths(ScaffoldRequest("static-vite", "test-app", tmp_path / "missing", runtime_repo))
+    assert not ok and errors
 
 
-# ============================================================
-# Path validation tests
-# ============================================================
+def test_missing_runtime_repo_fails(planning_repo, tmp_path):
+    ok, errors = validate_paths(ScaffoldRequest("static-vite", "test-app", planning_repo, tmp_path / "missing"))
+    assert not ok and errors
 
 
-class TestPathValidation:
-    def test_valid_paths(self, planning_repo, runtime_repo):
-        req = ScaffoldRequest(
-            profile="static-vite",
-            slug="test-app",
-            planning_repo=planning_repo,
-            runtime_repo=runtime_repo,
+def test_missing_apps_dir_fails(planning_repo, tmp_path):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    ok, errors = validate_paths(ScaffoldRequest("static-vite", "test-app", planning_repo, runtime))
+    assert not ok
+    assert any("apps directory" in item for item in errors)
+
+
+def test_source_profile_symlink_is_rejected(planning_repo, runtime_repo):
+    source = planning_repo / "templates" / "static-vite"
+    real = planning_repo / "templates" / "static-real"
+    source.rename(real)
+    source.symlink_to(real, target_is_directory=True)
+    ok, errors = validate_paths(ScaffoldRequest("static-vite", "test-app", planning_repo, runtime_repo))
+    assert not ok
+    assert any("symlink" in item for item in errors)
+
+
+def test_target_symlink_escape_is_rejected(planning_repo, runtime_repo, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (runtime_repo / "apps" / "test-app").symlink_to(outside, target_is_directory=True)
+    ok, errors = validate_paths(ScaffoldRequest("static-vite", "test-app", planning_repo, runtime_repo))
+    assert not ok
+    assert any("escape" in item or "symlink" in item for item in errors)
+
+
+@pytest.mark.parametrize("name", ["node_modules", "__pycache__", "dist", ".git", ".next"])
+def test_excluded_dirs(name):
+    assert name in EXCLUDED_DIR_NAMES
+    assert _should_exclude(Path(name))
+
+
+@pytest.mark.parametrize("name", ["mod.pyc", "mod.pyo", ".DS_Store", "Thumbs.db"])
+def test_excluded_files(name):
+    assert _should_exclude(Path(name))
+
+
+def test_normal_path_not_excluded():
+    assert not _should_exclude(Path("source"))
+    assert not _should_exclude(Path("main.py"))
+
+
+@pytest.mark.parametrize("profile", SUPPORTED_PROFILES)
+def test_scaffold_success_all_profiles(planning_repo, runtime_repo, profile):
+    slug = f"test-{profile}"
+    result = scaffold(ScaffoldRequest(profile, slug, planning_repo, runtime_repo))
+    target = runtime_repo / "apps" / slug
+    assert result["status"] == "SUCCESS"
+    assert result["profile"] == profile
+    assert result["slug"] == slug
+    assert target.is_dir()
+    assert (target / "README.md").is_file()
+    assert (target / "Dockerfile").is_file()
+    assert (target / "source" / "main.txt").is_file()
+    assert (target / "app.yaml").is_file()
+    assert not (target / "node_modules").exists()
+    assert not (target / "__pycache__").exists()
+    assert not (target / ".DS_Store").exists()
+    assert not (target / ".scaffold-stage").exists()
+    assert not (target / ".scaffold-backup").exists()
+
+
+def test_real_planning_repo_source_is_read_only_and_temp_runtime_only(tmp_path):
+    for profile in SUPPORTED_PROFILES:
+        assert (PLANNING_REPO / "templates" / profile).is_dir()
+    runtime = tmp_path / "runtime"
+    (runtime / "apps").mkdir(parents=True)
+    before = {p.relative_to(PLANNING_REPO).as_posix() for p in (PLANNING_REPO / "templates").rglob("*")}
+    scaffold(ScaffoldRequest("static-vite", "real-source-test", PLANNING_REPO, runtime))
+    after = {p.relative_to(PLANNING_REPO).as_posix() for p in (PLANNING_REPO / "templates").rglob("*")}
+    assert before == after
+    assert (runtime / "apps" / "real-source-test" / "app.yaml").is_file()
+
+
+@pytest.mark.parametrize(
+    "profile,db_type",
+    [
+        ("static-vite", "none"),
+        ("react-hono-sqlite", "sqlite"),
+        ("react-hono-postgres", "postgres"),
+        ("next-postgres", "postgres"),
+        ("python-fastapi", "sqlite"),
+        ("python-service", "sqlite"),
+    ],
+)
+def test_app_yaml_profile_baseline(profile, db_type):
+    content = _generate_app_yaml("my-app", profile)
+    assert "schema: 1" in content
+    assert "slug: my-app" in content
+    assert f"profile: {profile}" in content
+    assert f"type: {db_type}" in content
+    assert "mode: path" in content
+    assert "forward_auth: true" in content
+    assert "X-authentik-username" in content
+
+
+def test_existing_nonempty_target_rejected_without_explicit_overwrite(planning_repo, runtime_repo):
+    target = runtime_repo / "apps" / "existing-app"
+    target.mkdir()
+    (target / "keep.txt").write_text("keep", encoding="utf-8")
+    with pytest.raises(ValueError, match="already exists"):
+        scaffold(ScaffoldRequest("static-vite", "existing-app", planning_repo, runtime_repo))
+    assert (target / "keep.txt").read_text(encoding="utf-8") == "keep"
+
+
+def test_explicit_overwrite_replaces_stale_files_deterministically(planning_repo, runtime_repo):
+    target = runtime_repo / "apps" / "existing-app"
+    target.mkdir()
+    (target / "stale.txt").write_text("stale", encoding="utf-8")
+    result = scaffold(ScaffoldRequest("static-vite", "existing-app", planning_repo, runtime_repo, True))
+    assert result["status"] == "SUCCESS"
+    assert not (target / "stale.txt").exists()
+    assert (target / "README.md").is_file()
+
+
+def test_empty_existing_target_is_allowed(planning_repo, runtime_repo):
+    (runtime_repo / "apps" / "empty-app").mkdir()
+    assert scaffold(ScaffoldRequest("static-vite", "empty-app", planning_repo, runtime_repo))["status"] == "SUCCESS"
+
+
+def test_nested_file_symlink_escape_rejected_before_target_mutation(planning_repo, runtime_repo, tmp_path):
+    outside = tmp_path / "outside-secret.txt"
+    outside.write_text("DO-NOT-COPY", encoding="utf-8")
+    source = planning_repo / "templates" / "static-vite"
+    (source / "source" / "escape.txt").symlink_to(outside)
+    target = runtime_repo / "apps" / "safe-app"
+    with pytest.raises(ValueError, match="symlink file"):
+        scaffold(ScaffoldRequest("static-vite", "safe-app", planning_repo, runtime_repo))
+    assert not target.exists()
+
+
+def test_nested_directory_symlink_escape_rejected_before_target_mutation(planning_repo, runtime_repo, tmp_path):
+    outside = tmp_path / "outside-dir"
+    outside.mkdir()
+    (outside / "payload.txt").write_text("DO-NOT-COPY", encoding="utf-8")
+    source = planning_repo / "templates" / "static-vite"
+    (source / "linked").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ValueError, match="symlink directory"):
+        scaffold(ScaffoldRequest("static-vite", "safe-app", planning_repo, runtime_repo))
+    assert not (runtime_repo / "apps" / "safe-app").exists()
+
+
+def test_copy_failure_cleans_new_target(planning_repo, runtime_repo, monkeypatch):
+    import scaffold_template as module
+
+    original = module._copy_template
+
+    def fail_after_write(source, target):
+        original(source, target)
+        raise OSError("simulated copy failure")
+
+    monkeypatch.setattr(module, "_copy_template", fail_after_write)
+    with pytest.raises(OSError, match="simulated"):
+        module.scaffold(ScaffoldRequest("static-vite", "new-app", planning_repo, runtime_repo))
+    assert not (runtime_repo / "apps" / "new-app").exists()
+
+
+def test_copy_failure_preserves_existing_target_on_overwrite(planning_repo, runtime_repo, monkeypatch):
+    import scaffold_template as module
+
+    target = runtime_repo / "apps" / "existing-app"
+    target.mkdir()
+    (target / "keep.txt").write_text("original", encoding="utf-8")
+    original = module._copy_template
+
+    def fail_after_write(source, stage):
+        original(source, stage)
+        raise OSError("simulated copy failure")
+
+    monkeypatch.setattr(module, "_copy_template", fail_after_write)
+    with pytest.raises(OSError, match="simulated"):
+        module.scaffold(ScaffoldRequest("static-vite", "existing-app", planning_repo, runtime_repo, True))
+    assert (target / "keep.txt").read_text(encoding="utf-8") == "original"
+    assert set(p.name for p in target.iterdir()) == {"keep.txt"}
+
+
+def test_reserved_internal_target_path_rejected(planning_repo, runtime_repo):
+    target = runtime_repo / "apps" / "existing-app"
+    target.mkdir()
+    (target / ".scaffold-stage").mkdir()
+    with pytest.raises(ValueError, match="already exists|reserved"):
+        scaffold(ScaffoldRequest("static-vite", "existing-app", planning_repo, runtime_repo, True))
+
+
+def test_fifo_in_template_is_rejected_fail_closed(planning_repo, runtime_repo):
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("mkfifo unavailable")
+    fifo = planning_repo / "templates" / "static-vite" / "unsafe-fifo"
+    os.mkfifo(fifo)
+    with pytest.raises(ValueError, match="non-regular"):
+        scaffold(ScaffoldRequest("static-vite", "safe-app", planning_repo, runtime_repo))
+    assert not (runtime_repo / "apps" / "safe-app").exists()
+
+
+def test_invalid_profile_and_slug_raise_before_writes(planning_repo, runtime_repo):
+    with pytest.raises(ValueError):
+        scaffold(ScaffoldRequest("invalid", "safe-app", planning_repo, runtime_repo))
+    with pytest.raises(ValueError):
+        scaffold(ScaffoldRequest("static-vite", "../escape", planning_repo, runtime_repo))
+    assert list((runtime_repo / "apps").iterdir()) == []
+
+
+def test_cli_list_profiles():
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT_DIR / "scaffold_template.py"), "list-profiles"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert tuple(json.loads(result.stdout)["profiles"]) == SUPPORTED_PROFILES
+
+
+def test_cli_validate_slug_success_and_failure():
+    good = subprocess.run(
+        [sys.executable, str(SCRIPT_DIR / "scaffold_template.py"), "validate-slug", "my-app"],
+        capture_output=True,
+        text=True,
+    )
+    bad = subprocess.run(
+        [sys.executable, str(SCRIPT_DIR / "scaffold_template.py"), "validate-slug", "../bad"],
+        capture_output=True,
+        text=True,
+    )
+    assert good.returncode == 0 and json.loads(good.stdout)["valid"] is True
+    assert bad.returncode == 1 and json.loads(bad.stdout)["valid"] is False
+
+
+def test_cli_scaffold_success_and_failure(planning_repo, runtime_repo):
+    base = [
+        sys.executable,
+        str(SCRIPT_DIR / "scaffold_template.py"),
+        "scaffold",
+        "--planning-repo",
+        str(planning_repo),
+        "--runtime-repo",
+        str(runtime_repo),
+    ]
+    good = subprocess.run(base + ["--profile", "static-vite", "--slug", "cli-app"], capture_output=True, text=True)
+    bad = subprocess.run(base + ["--profile", "bad", "--slug", "other-app"], capture_output=True, text=True)
+    assert good.returncode == 0 and json.loads(good.stdout)["status"] == "SUCCESS"
+    assert bad.returncode == 1 and json.loads(bad.stdout)["status"] == "FAILED"
+
+
+def _load_result_schema():
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = json.loads((TEMPLATES_DIR / "executor-result.schema.json").read_text(encoding="utf-8"))
+    return jsonschema.Draft202012Validator(schema)
+
+
+def _result(status="SUCCESS", **overrides):
+    data = {
+        "status": status,
+        "summary": "done",
+        "files_changed": ["source/main.py"],
+        "tests": [{"command": "pytest", "exit_code": 0, "result": "passed"}],
+        "warnings": [],
+        "architecture_blockers": [],
+        "recommended_follow_up": [],
+    }
+    data.update(overrides)
+    return data
+
+
+def test_executor_result_success_valid():
+    assert not list(_load_result_schema().iter_errors(_result()))
+
+
+def test_executor_result_success_rejects_failed_test_result():
+    errors = list(
+        _load_result_schema().iter_errors(
+            _result(tests=[{"command": "pytest", "exit_code": 0, "result": "failed"}])
         )
-        ok, errors = validate_paths(req)
-        assert ok is True
-        assert errors == []
+    )
+    assert errors
 
-    def test_invalid_planning_repo_missing(self, tmp_path, runtime_repo):
-        req = ScaffoldRequest(
-            profile="static-vite",
-            slug="test-app",
-            planning_repo=tmp_path / "nonexistent",
-            runtime_repo=runtime_repo,
+
+def test_executor_result_success_rejects_nonzero_test_exit():
+    errors = list(
+        _load_result_schema().iter_errors(
+            _result(tests=[{"command": "pytest", "exit_code": 1, "result": "failed"}])
         )
-        ok, errors = validate_paths(req)
-        assert ok is False
-        assert any("does not exist" in e for e in errors)
-
-    def test_invalid_runtime_repo_missing(self, planning_repo, tmp_path):
-        req = ScaffoldRequest(
-            profile="static-vite",
-            slug="test-app",
-            planning_repo=planning_repo,
-            runtime_repo=tmp_path / "nonexistent",
-        )
-        ok, errors = validate_paths(req)
-        assert ok is False
-
-    def test_invalid_apps_dir_missing(self, planning_repo, tmp_path):
-        rr = tmp_path / "runtime"
-        rr.mkdir()
-        # No apps/ directory
-        req = ScaffoldRequest(
-            profile="static-vite",
-            slug="test-app",
-            planning_repo=planning_repo,
-            runtime_repo=rr,
-        )
-        ok, errors = validate_paths(req)
-        assert ok is False
-        assert any("apps directory" in e for e in errors)
-
-    def test_invalid_source_template_missing(self, planning_repo, runtime_repo):
-        req = ScaffoldRequest(
-            profile="nonexistent-profile",
-            slug="test-app",
-            planning_repo=planning_repo,
-            runtime_repo=runtime_repo,
-        )
-        ok, errors = validate_paths(req)
-        assert ok is False
-
-
-# ============================================================
-# Scope escape / traversal tests
-# ============================================================
-
-
-class TestScopeEscape:
-    def test_target_must_be_inside_apps(self, planning_repo, runtime_repo):
-        """Target directory must resolve inside runtime_repo/apps/."""
-        # This is enforced by validate_paths — the target is always
-        # runtime_repo/apps/<slug>, so it's always inside apps/
-        # unless slug contains traversal characters (which validate_slug rejects)
-        req = ScaffoldRequest(
-            profile="static-vite",
-            slug="normal-app",
-            planning_repo=planning_repo,
-            runtime_repo=runtime_repo,
-        )
-        ok, errors = validate_paths(req)
-        assert ok is True
-        # Verify target is inside apps/
-        assert req.target_dir.resolve().is_relative_to(
-            (runtime_repo / "apps").resolve()
-        )
-
-    def test_slug_traversal_rejected(self, planning_repo, runtime_repo):
-        """Slugs with path traversal characters are rejected by validate_slug."""
-        for bad_slug in ["../etc", "..", "foo/../../bar", "foo/bar"]:
-            ok, err = validate_slug(bad_slug)
-            assert ok is False, f"slug '{bad_slug}' should be rejected"
-
-    def test_source_must_be_inside_templates(self, tmp_path, runtime_repo):
-        """Source must be inside planning_repo/templates/."""
-        pr = tmp_path / "planning"
-        pr.mkdir()
-        # No templates/ directory
-        req = ScaffoldRequest(
-            profile="static-vite",
-            slug="test-app",
-            planning_repo=pr,
-            runtime_repo=runtime_repo,
-        )
-        ok, errors = validate_paths(req)
-        assert ok is False
-
-
-# ============================================================
-# Exclusion tests
-# ============================================================
-
-
-class TestExclusions:
-    def test_node_modules_excluded(self):
-        assert _should_exclude(Path("node_modules")) is True
-
-    def test_pycache_excluded(self):
-        assert _should_exclude(Path("__pycache__")) is True
-
-    def test_dist_excluded(self):
-        assert _should_exclude(Path("dist")) is True
-
-    def test_git_excluded(self):
-        assert _should_exclude(Path(".git")) is True
-
-    def test_next_excluded(self):
-        assert _should_exclude(Path(".next")) is True
-
-    def test_pyc_file_excluded(self):
-        assert _should_exclude(Path("module.pyc")) is True
-
-    def test_ds_store_excluded(self):
-        assert _should_exclude(Path(".DS_Store")) is True
-
-    def test_normal_file_not_excluded(self):
-        assert _should_exclude(Path("main.py")) is False
-
-    def test_normal_dir_not_excluded(self):
-        assert _should_exclude(Path("source")) is False
-
-
-# ============================================================
-# Success cases — all 6 profiles
-# ============================================================
-
-
-class TestScaffoldSuccess:
-    @pytest.mark.parametrize("profile", SUPPORTED_PROFILES)
-    def test_scaffold_each_profile(self, planning_repo, runtime_repo, profile):
-        """Each of the 6 profiles scaffolds successfully."""
-        req = ScaffoldRequest(
-            profile=profile,
-            slug=f"test-{profile}",
-            planning_repo=planning_repo,
-            runtime_repo=runtime_repo,
-        )
-        result = scaffold(req)
-
-        assert result["status"] == "SUCCESS"
-        assert result["profile"] == profile
-        assert result["slug"] == f"test-{profile}"
-        assert result["app_yaml_generated"] is True
-        assert result["files_count"] > 0
-
-        # Verify target directory exists
-        target = runtime_repo / "apps" / f"test-{profile}"
-        assert target.is_dir()
-
-        # Verify app.yaml was generated
-        app_yaml = target / "app.yaml"
-        assert app_yaml.is_file()
-        content = app_yaml.read_text()
-        assert f"slug: test-{profile}" in content
-        assert f"profile: {profile}" in content
-        assert "schema: 1" in content
-
-        # Verify README was copied
-        readme = target / "README.md"
-        assert readme.is_file()
-
-        # Verify Dockerfile was copied
-        dockerfile = target / "Dockerfile"
-        assert dockerfile.is_file()
-
-        # Verify source subdirectory was copied
-        source_dir = target / "source"
-        assert source_dir.is_dir()
-        assert (source_dir / "main.txt").is_file()
-
-    @pytest.mark.parametrize("profile", SUPPORTED_PROFILES)
-    def test_excluded_files_not_copied(self, planning_repo, runtime_repo, profile):
-        """Excluded directories and files must not be copied."""
-        slug = f"test-excl-{profile}"
-        req = ScaffoldRequest(
-            profile=profile,
-            slug=slug,
-            planning_repo=planning_repo,
-            runtime_repo=runtime_repo,
-        )
-        result = scaffold(req)
-        target = runtime_repo / "apps" / slug
-
-        # node_modules must NOT exist
-        assert not (target / "node_modules").exists()
-        # __pycache__ must NOT exist
-        assert not (target / "__pycache__").exists()
-        # .pyc files must NOT exist
-        pyc_files = list(target.rglob("*.pyc"))
-        assert len(pyc_files) == 0
-        # .DS_Store must NOT exist
-        assert not (target / ".DS_Store").exists()
-
-    def test_scaffold_with_real_planning_repo(self, runtime_repo):
-        """Scaffold using the real planning repo as source (read-only)."""
-        if not PLANNING_REPO.is_dir():
-            pytest.skip("Real planning repo not available")
-
-        req = ScaffoldRequest(
-            profile="static-vite",
-            slug="real-test-app",
-            planning_repo=PLANNING_REPO,
-            runtime_repo=runtime_repo,
-        )
-        result = scaffold(req)
-        assert result["status"] == "SUCCESS"
-        assert result["files_count"] > 0
-
-        # Verify key files exist
-        target = runtime_repo / "apps" / "real-test-app"
-        assert (target / "app.yaml").is_file()
-        assert (target / "Dockerfile").is_file()
-        assert (target / "README.md").is_file()
-
-        # node_modules must NOT be copied (large dir)
-        assert not (target / "node_modules").exists()
-
-    def test_app_yaml_content_per_profile(self, planning_repo, runtime_repo):
-        """Verify app.yaml has correct database type per profile."""
-        expected_db = {
-            "static-vite": "none",
-            "react-hono-sqlite": "sqlite",
-            "react-hono-postgres": "postgres",
-            "next-postgres": "postgres",
-            "python-fastapi": "sqlite",
-            "python-service": "sqlite",
-        }
-        for profile, db_type in expected_db.items():
-            slug = f"yaml-test-{profile}"
-            req = ScaffoldRequest(
-                profile=profile,
-                slug=slug,
-                planning_repo=planning_repo,
-                runtime_repo=runtime_repo,
-            )
-            scaffold(req)
-            app_yaml = runtime_repo / "apps" / slug / "app.yaml"
-            content = app_yaml.read_text()
-            assert f"type: {db_type}" in content, (
-                f"profile {profile} should have db type {db_type}"
-            )
-            assert "mode: path" in content
-            assert "forward_auth: true" in content
-            assert "authentik-forward-auth" in content
-
-
-# ============================================================
-# Existing target tests
-# ============================================================
-
-
-class TestExistingTarget:
-    def test_existing_nonempty_target_rejected(self, planning_repo, runtime_repo):
-        """Scaffolding into a non-empty existing directory fails without allow_overwrite."""
-        slug = "existing-app"
-        target = runtime_repo / "apps" / slug
-        target.mkdir()
-        (target / "existing-file.txt").write_text("existing content")
-
-        req = ScaffoldRequest(
-            profile="static-vite",
-            slug=slug,
-            planning_repo=planning_repo,
-            runtime_repo=runtime_repo,
-            allow_overwrite=False,
-        )
-        with pytest.raises(ValueError, match="already exists"):
-            scaffold(req)
-
-    def test_existing_target_with_overwrite(self, planning_repo, runtime_repo):
-        """Scaffolding with allow_overwrite=True succeeds."""
-        slug = "overwrite-app"
-        target = runtime_repo / "apps" / slug
-        target.mkdir()
-        (target / "existing-file.txt").write_text("existing content")
-
-        req = ScaffoldRequest(
-            profile="static-vite",
-            slug=slug,
-            planning_repo=planning_repo,
-            runtime_repo=runtime_repo,
-            allow_overwrite=True,
-        )
-        result = scaffold(req)
-        assert result["status"] == "SUCCESS"
-
-    def test_empty_existing_target_ok(self, planning_repo, runtime_repo):
-        """Scaffolding into an empty existing directory succeeds."""
-        slug = "empty-target-app"
-        target = runtime_repo / "apps" / slug
-        target.mkdir()
-
-        req = ScaffoldRequest(
-            profile="static-vite",
-            slug=slug,
-            planning_repo=planning_repo,
-            runtime_repo=runtime_repo,
-        )
-        result = scaffold(req)
-        assert result["status"] == "SUCCESS"
-
-
-# ============================================================
-# Fail-closed tests
-# ============================================================
-
-
-class TestFailClosed:
-    def test_invalid_profile_raises(self, planning_repo, runtime_repo):
-        req = ScaffoldRequest(
-            profile="invalid-profile",
-            slug="test-app",
-            planning_repo=planning_repo,
-            runtime_repo=runtime_repo,
-        )
-        with pytest.raises(ValueError, match="not supported"):
-            scaffold(req)
-
-    def test_invalid_slug_raises(self, planning_repo, runtime_repo):
-        req = ScaffoldRequest(
-            profile="static-vite",
-            slug="INVALID",
-            planning_repo=planning_repo,
-            runtime_repo=runtime_repo,
-        )
-        with pytest.raises(ValueError, match="invalid"):
-            scaffold(req)
-
-    def test_missing_planning_repo_raises(self, tmp_path, runtime_repo):
-        req = ScaffoldRequest(
-            profile="static-vite",
-            slug="test-app",
-            planning_repo=tmp_path / "nonexistent",
-            runtime_repo=runtime_repo,
-        )
-        with pytest.raises(ValueError, match="does not exist"):
-            scaffold(req)
-
-    def test_missing_runtime_repo_raises(self, planning_repo, tmp_path):
-        req = ScaffoldRequest(
-            profile="static-vite",
-            slug="test-app",
-            planning_repo=planning_repo,
-            runtime_repo=tmp_path / "nonexistent",
-        )
-        with pytest.raises(ValueError, match="does not exist"):
-            scaffold(req)
-
-
-# ============================================================
-# CLI tests
-# ============================================================
-
-
-class TestCLI:
-    def test_cli_list_profiles(self):
-        result = subprocess.run(
-            [sys.executable, str(SCRIPT_DIR / "scaffold_template.py"), "list-profiles"],
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode == 0
-        data = json.loads(result.stdout)
-        assert "profiles" in data
-        assert set(data["profiles"]) == set(SUPPORTED_PROFILES)
-
-    def test_cli_validate_slug_valid(self):
-        result = subprocess.run(
-            [sys.executable, str(SCRIPT_DIR / "scaffold_template.py"), "validate-slug", "my-app"],
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode == 0
-        data = json.loads(result.stdout)
-        assert data["valid"] is True
-
-    def test_cli_validate_slug_invalid(self):
-        result = subprocess.run(
-            [sys.executable, str(SCRIPT_DIR / "scaffold_template.py"), "validate-slug", "INVALID"],
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode == 1
-        data = json.loads(result.stdout)
-        assert data["valid"] is False
-
-    def test_cli_scaffold_success(self, planning_repo, runtime_repo):
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(SCRIPT_DIR / "scaffold_template.py"),
-                "scaffold",
-                "--profile", "static-vite",
-                "--slug", "cli-test-app",
-                "--planning-repo", str(planning_repo),
-                "--runtime-repo", str(runtime_repo),
-            ],
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode == 0
-        data = json.loads(result.stdout)
-        assert data["status"] == "SUCCESS"
-        assert data["profile"] == "static-vite"
-        assert data["slug"] == "cli-test-app"
-
-    def test_cli_scaffold_failure(self, planning_repo, runtime_repo):
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(SCRIPT_DIR / "scaffold_template.py"),
-                "scaffold",
-                "--profile", "invalid-profile",
-                "--slug", "test-app",
-                "--planning-repo", str(planning_repo),
-                "--runtime-repo", str(runtime_repo),
-            ],
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode == 1
-        data = json.loads(result.stdout)
-        assert data["status"] == "FAILED"
-
-
-# ============================================================
-# app.yaml generation tests
-# ============================================================
-
-
-class TestAppYamlGeneration:
-    def test_generate_app_yaml_static(self):
-        content = _generate_app_yaml("my-app", "static-vite")
-        assert "slug: my-app" in content
-        assert "profile: static-vite" in content
-        assert "type: none" in content
-        assert "mode: path" in content
-
-    def test_generate_app_yaml_sqlite(self):
-        content = _generate_app_yaml("my-app", "react-hono-sqlite")
-        assert "type: sqlite" in content
-
-    def test_generate_app_yaml_postgres(self):
-        content = _generate_app_yaml("my-app", "react-hono-postgres")
-        assert "type: postgres" in content
-
-    def test_generate_app_yaml_identity_headers(self):
-        content = _generate_app_yaml("my-app", "static-vite")
-        assert "X-authentik-username" in content
-        assert "X-authentik-email" in content
-        assert "X-authentik-name" in content
-        assert "X-authentik-uid" in content
-        assert "X-authentik-groups" in content
-
-    def test_generate_app_yaml_schema_version(self):
-        content = _generate_app_yaml("my-app", "static-vite")
-        assert "schema: 1" in content
-
-
-# ============================================================
-# Portability contract tests
-# ============================================================
-
-
-class TestPortabilityContract:
-    def test_no_agent_specific_imports(self):
-        """scaffold_template.py must not import agent-specific modules."""
-        source = (SCRIPT_DIR / "scaffold_template.py").read_text()
-        forbidden = ["hermes", "kanban", "agy", "gemini", "qwen", "codex", "opencode"]
-        for mod in forbidden:
-            # Check for import statements (not comments)
-            for line in source.split("\n"):
-                stripped = line.strip()
-                if stripped.startswith("#"):
-                    continue
-                if f"import {mod}" in stripped.lower():
-                    pytest.fail(f"scaffold_template.py imports agent-specific module: {mod}")
-
-    def test_stdlib_only(self):
-        """scaffold_template.py must use only stdlib modules."""
-        source = (SCRIPT_DIR / "scaffold_template.py").read_text()
-        # Extract import lines
-        imports = []
-        for line in source.split("\n"):
-            stripped = line.strip()
-            if stripped.startswith("import ") or stripped.startswith("from "):
-                imports.append(stripped)
-
-        # Allowed stdlib modules
-        allowed = {"argparse", "json", "re", "shutil", "sys", "pathlib", "dataclasses", "typing", "__future__"}
-        for imp in imports:
-            if imp.startswith("from "):
-                mod = imp.split()[1].split(".")[0]
-            else:
-                mod = imp.split()[1].split(".")[0]
-            assert mod in allowed, f"Non-stdlib import: {imp}"
-
-    def test_no_runtime_specific_logic(self):
-        """scaffold_template.py must not contain runtime-specific agent logic."""
-        source = (SCRIPT_DIR / "scaffold_template.py").read_text()
-        forbidden_patterns = [
-            "agy-job",
-            "kanban create",
-            "hermes kanban",
-            "delegate_task",
-        ]
-        for pattern in forbidden_patterns:
-            assert pattern not in source, f"Runtime-specific pattern found: {pattern}"
+    )
+    assert errors
+
+
+def test_executor_result_success_requires_test_evidence():
+    assert list(_load_result_schema().iter_errors(_result(tests=[])))
+
+
+def test_executor_result_architecture_blocker_valid_without_tests_or_changes():
+    blocker = _result(
+        "ARCHITECTURE_BLOCKER",
+        files_changed=[],
+        tests=[],
+        architecture_blockers=["Need an architecture decision"],
+    )
+    assert not list(_load_result_schema().iter_errors(blocker))
+
+
+def test_executor_result_architecture_blocker_rejects_changed_files():
+    blocker = _result("ARCHITECTURE_BLOCKER", tests=[], architecture_blockers=["decision"])
+    assert list(_load_result_schema().iter_errors(blocker))
+
+
+def test_executor_result_failed_may_have_no_tests():
+    failed = _result("FAILED", tests=[], files_changed=[])
+    assert not list(_load_result_schema().iter_errors(failed))
+
+
+def test_executor_result_requires_all_structured_fields():
+    data = _result()
+    del data["warnings"]
+    assert list(_load_result_schema().iter_errors(data))
+
+
+@pytest.mark.parametrize("bad_path", ["../escape", "source/../../escape", "/absolute/path", r"source\windows.txt"])
+def test_executor_result_rejects_unbounded_changed_paths(bad_path):
+    assert list(_load_result_schema().iter_errors(_result(files_changed=[bad_path])))
+
+
+def test_executor_result_schema_has_no_agent_provider_or_model_requirement():
+    text = (TEMPLATES_DIR / "executor-result.schema.json").read_text(encoding="utf-8").lower()
+    for forbidden in ["qwen", "gemini", "agy", "hermes", "kanban", "codex", "opencode", '"provider"', '"model"']:
+        assert forbidden not in text
+
+
+def test_executor_brief_is_agent_neutral_and_bounded():
+    text = (TEMPLATES_DIR / "executor-brief.md").read_text(encoding="utf-8").lower()
+    for forbidden in ["qwen", "gemini", "agy", "hermes", "kanban", "codex", "opencode"]:
+        assert forbidden not in text
+    assert "apps/<slug>/" in text
+    assert "do not access the planning repo" in text
+    assert "git commit" in text
+    assert "deployment" in text
+    assert "control-plane" in text
+    assert "executor-result.schema.json" in text
+    assert "self-report" in text
+
+
+def test_scaffold_script_is_stdlib_only_and_agent_neutral():
+    source = (SCRIPT_DIR / "scaffold_template.py").read_text(encoding="utf-8")
+    lower = source.lower()
+    for forbidden in ["hermes", "kanban", "agy", "gemini", "qwen", "codex", "opencode"]:
+        assert forbidden not in lower
+    allowed = {
+        "__future__",
+        "argparse",
+        "json",
+        "os",
+        "re",
+        "shutil",
+        "stat",
+        "sys",
+        "dataclasses",
+        "pathlib",
+        "typing",
+    }
+    for line in source.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("import "):
+            module = stripped.split()[1].split(".")[0]
+            assert module in allowed
+        elif stripped.startswith("from "):
+            module = stripped.split()[1].split(".")[0]
+            assert module in allowed
+
+
+def test_template_reserved_internal_path_rejected(planning_repo, runtime_repo):
+    source = planning_repo / "templates" / "static-vite"
+    (source / ".scaffold-backup").mkdir()
+    with pytest.raises(ValueError, match="reserved scaffold path"):
+        scaffold(ScaffoldRequest("static-vite", "safe-app", planning_repo, runtime_repo))
+    assert not (runtime_repo / "apps" / "safe-app").exists()
