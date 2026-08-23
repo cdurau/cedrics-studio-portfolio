@@ -598,3 +598,115 @@ class TestCLICommands:
             manifest = yaml.safe_load(f)
         assert manifest["profile"] == "react-hono-sqlite"
         assert manifest["database"]["type"] == "sqlite"
+
+
+# =============================================================================
+# 8. Portability Regression Tests (Portable-Core Architecture Cleanup)
+# =============================================================================
+
+class TestPortabilityRegression:
+    """Regression tests for portable-core architecture (2026-08-23).
+    
+    Ensures the App Builder Core is agent-neutral and has no hard dependencies
+    on specific orchestrators, models, or execution frameworks.
+    """
+
+    def test_app_brief_valid_without_orchestration(self):
+        """App brief without orchestration field must be valid (PC-H1)."""
+        with open(BRIEF_TEMPLATE_PATH, "r", encoding="utf-8") as f:
+            brief = json.load(f)
+        
+        # Remove orchestration if present
+        if "orchestration" in brief:
+            del brief["orchestration"]
+        
+        # Must still be valid
+        is_valid, errors = validate_app_brief(brief)
+        assert is_valid is True, f"Brief without orchestration should be valid"
+        assert errors == [], f"Brief without orchestration should have no errors, got: {errors}"
+
+    def test_core_schema_has_no_agent_specific_requirements(self):
+        """Core schema must not require specific agent/model names (PC-H1, PC-L2)."""
+        with open(TEMPLATES_DIR / "app-brief.schema.json", "r", encoding="utf-8") as f:
+            schema = json.load(f)
+        
+        # Check that orchestration is not in required fields
+        assert "orchestration" not in schema["required"], \
+            "orchestration should not be required in core schema"
+        
+        # Check that orchestration properties don't have agent-specific enums
+        if "orchestration" in schema["properties"]:
+            orch_props = schema["properties"]["orchestration"]["properties"]
+            
+            # executor_type should be a generic string, not an enum with specific agents
+            if "executor_type" in orch_props:
+                assert "enum" not in orch_props["executor_type"], \
+                    "executor_type should not have agent-specific enum values"
+            
+            # external_task_id should be generic
+            if "external_task_id" in orch_props:
+                assert orch_props["external_task_id"]["type"] in ["string", "null", ["string", "null"]], \
+                    "external_task_id should be a generic string or null"
+
+    def test_optional_orchestration_with_neutral_values(self):
+        """Optional orchestration with neutral values must be valid."""
+        with open(BRIEF_TEMPLATE_PATH, "r", encoding="utf-8") as f:
+            brief = json.load(f)
+        
+        # Add neutral orchestration
+        brief["orchestration"] = {
+            "executor_type": "generic",
+            "review_required": True,
+            "external_task_id": "task-123"
+        }
+        
+        is_valid, errors = validate_app_brief(brief)
+        assert is_valid is True, f"Brief with neutral orchestration should be valid"
+        assert errors == [], f"Brief with neutral orchestration should have no errors, got: {errors}"
+
+    def test_profile_selection_unchanged_deterministic(self):
+        """Profile selection must remain deterministic after portable-core changes."""
+        # Test same inputs produce same outputs
+        reqs1 = make_reqs(
+            shared_state=True,
+            python_needed=False,
+            ssr_rsc_needed=False,
+            sqlite_sufficient=True,
+            backend_needed=True,
+        )
+        reqs2 = make_reqs(
+            shared_state=True,
+            python_needed=False,
+            ssr_rsc_needed=False,
+            sqlite_sufficient=True,
+            backend_needed=True,
+        )
+        
+        result1 = evaluate_requirements(reqs1)
+        result2 = evaluate_requirements(reqs2)
+        
+        assert result1.profile == result2.profile
+        assert result1.rationale == result2.rationale
+        assert result1.is_escalated == result2.is_escalated
+
+    def test_app_yaml_derivation_unchanged(self):
+        """app.yaml derivation must remain unchanged after portable-core changes."""
+        with open(BRIEF_TEMPLATE_PATH, "r", encoding="utf-8") as f:
+            brief = json.load(f)
+        
+        # Derive manifest
+        manifest = derive_app_manifest(brief)
+        
+        # Check structure is unchanged
+        assert "schema" in manifest
+        assert "slug" in manifest
+        assert "profile" in manifest
+        assert "routing" in manifest
+        assert "database" in manifest
+        assert "auth" in manifest
+        
+        # Check values are correct
+        assert manifest["profile"] == "react-hono-sqlite"
+        assert manifest["routing"]["mode"] == "path"
+        assert manifest["database"]["type"] == "sqlite"
+        assert manifest["auth"]["method"] == "authentik-forward-auth"

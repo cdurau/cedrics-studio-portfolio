@@ -3,7 +3,7 @@
   "title": "Phase 11 App Brief Schema",
   "description": "Canonical schema for app-brief.json files in the Phase 11 orchestration workflow",
   "type": "object",
-  "required": ["schema", "app", "profile_selection", "orchestration", "metadata"],
+  "required": ["schema", "app", "profile_selection", "metadata"],
   "properties": {
     "schema": {
       "type": "integer",
@@ -116,20 +116,19 @@
     },
     "orchestration": {
       "type": "object",
-      "required": ["kanban_task_id", "executor_routing", "senior_review_required"],
+      "required": [],
       "properties": {
-        "kanban_task_id": {
-          "type": ["string", "null"],
-          "description": "Kanban task ID (null if not yet created)"
-        },
-        "executor_routing": {
+        "executor_type": {
           "type": "string",
-          "enum": ["agy-gemini-3.7-flash-high", "agy-gemini-3.1-pro-high", "agy-ox-alpha"],
-          "description": "Executor routing decision"
+          "description": "Type of executor (adapter-specific, e.g., 'agy', 'codex', 'opencode')"
         },
-        "senior_review_required": {
+        "review_required": {
           "type": "boolean",
-          "description": "Whether senior review is required"
+          "description": "Whether independent senior review is required"
+        },
+        "external_task_id": {
+          "type": ["string", "null"],
+          "description": "Adapter-specific task tracking ID (null if not yet created)"
         }
       },
       "additionalProperties": false
