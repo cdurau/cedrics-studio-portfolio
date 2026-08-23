@@ -386,7 +386,7 @@ class TestDeterminism:
 # =============================================================================
 
 class TestSeniorReviewF1F4Regression:
-    """Regression tests for Senior Review F1-F4 findings (2026-01-10)."""
+    """Regression tests for Senior Review F1-F4 findings (2026-08-23)."""
 
     def test_f1_ssr_with_shared_state_false_escalates(self):
         """F1: ssr_rsc_needed=true with shared_state=false must escalate, not select static-vite."""
@@ -492,7 +492,7 @@ class TestSeniorReviewF1F4Regression:
                 "senior_review_required": False,
             },
             "metadata": {
-                "created_at": "2026-01-10T12:00:00Z",
+                "created_at": "2026-08-23T12:00:00Z",
                 "created_by": "test",
             },
         }
@@ -530,7 +530,7 @@ class TestSeniorReviewF1F4Regression:
                 "senior_review_required": False,
             },
             "metadata": {
-                "created_at": "2026-01-10T12:00:00Z",
+                "created_at": "2026-08-23T12:00:00Z",
                 "created_by": "test",
             },
         }
