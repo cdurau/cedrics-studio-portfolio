@@ -1,174 +1,91 @@
 # Executor Brief — Portable Core Template
 
-**Status:** Template — to be filled by Orchestrator per app build  
-**Version:** 1.0  
+**Status:** Template — completed by the Orchestrator for one bounded implementation  
+**Version:** 1.1  
 **Scope:** Agent-neutral implementation contract
-
----
 
 ## ROLE
 
-You are the bounded implementation executor. The Orchestrator owns architecture, acceptance, and deployment authority.
+You are a bounded implementation executor. The Orchestrator owns architecture, acceptance, Git authority, deployment authority, and external control-plane authority.
 
-You may:
-- Read and change in-scope files within the approved workspace
-- Install task dependencies within the workspace
-- Run local commands, tests, linters, builds, and bounded Docker checks explicitly named in this brief
-
-You may NOT autonomously:
-- Commit or push to Git
-- Deploy to any environment
-- Modify Control Plane (Coolify, Tailscale, Authentik, DNS, network)
-- Read, create, or expose secrets
-- Change architecture boundaries
-- Work outside the approved workspace
-
-If implementation requires changing an architecture boundary, return `ARCHITECTURE_BLOCKER` instead of making the change.
-
----
+You may only perform actions explicitly allowed by this brief. If the requested implementation cannot be completed without crossing an architecture or authority boundary, stop and return `ARCHITECTURE_BLOCKER`.
 
 ## GOAL
 
-<Precise, verifiable outcome from app-brief.json>
+<One precise, verifiable implementation outcome derived from app-brief.json>
 
-**App Name:** <name>  
-**App Slug:** <slug>  
-**Profile:** <profile>  
-**Purpose:** <purpose from app-brief.json>
-
----
+- App name: `<name>`
+- App slug: `<slug>`
+- Profile: `<profile>`
+- Purpose: `<purpose>`
 
 ## WORKSPACE
 
-**Absolute path:** `<runtime-repo>/apps/<slug>/`
+**Approved workspace:** `<runtime-repo>/apps/<slug>/`
 
-You work **exclusively** within this directory. No cross-repo access. No changes outside this scope.
-
----
+Work exclusively inside this directory. Do not read or modify sibling apps, shared repositories, or parent-repository files unless a future brief explicitly grants a narrower read-only exception.
 
 ## SOURCE TEMPLATE
 
-The Orchestrator has already scaffolded the source template from `templates/<profile>/` into your workspace. You work only within `apps/<slug>/`.
+The approved source profile has already been scaffolded by the Orchestrator/Core into the workspace before execution begins.
 
-**Template profile:** <profile>  
-**Scaffolded files:** <list of files copied from template>
+- Profile: `<profile>`
+- Scaffolded files: `<list>`
 
----
+Do not access the Planning Repo, select another profile, re-scaffold the app, or copy files from another repository. Template selection and scaffolding are Orchestrator/Core responsibilities.
 
 ## SCOPE
 
 ### Allowed
 
-- `apps/<slug>/**` — complete app structure
-- May install dependencies within `apps/<slug>/`
-- May run local tests, builds, Docker builds within scope
-- May create/modify files explicitly required by the profile contract
+- Read and modify files already inside the approved app workspace.
+- Create files inside the workspace when required by the selected profile and app brief.
+- Install task dependencies inside the workspace.
+- Run the local tests, linters, builds, and bounded container checks named below.
 
 ### Forbidden
 
-- Any file outside `apps/<slug>/`
-- `.github/workflows/` (except orchestrator-generated `deploy-<slug>.yml`)
-- Other apps (`apps/<other-slug>/`)
-- Planning repo files
-- Shared packages, `platform/`, `infra/`
-- Git operations (commit, push, branch)
-- Deployment operations
-- Control plane operations (Coolify, Tailscale, Authentik, DNS)
-- Secret creation or exposure
-
----
+- Any write outside `apps/<slug>/`.
+- Any read from the Planning Repo or another app for implementation input.
+- Git commit, push, branch, tag, reset, or remote mutation.
+- Deployment or release operations.
+- External control-plane changes, including infrastructure, routing, identity, DNS, or network changes.
+- Creating, copying, exposing, or logging secrets or credentials.
+- Changing the selected profile or architecture boundary.
+- Unrelated refactors or cleanup outside the stated goal.
 
 ## CONSTRAINTS
 
-### Frozen Architecture
-
-- Phase 0–10 are COMPLETE and frozen
-- Follow `templates/CONTRACTS.md` (container, health, routing, auth, migration, secrets)
-- No architecture changes without explicit Orchestrator approval
-
-### Security
-
-- No secrets in Git, docs, or logs
-- No hardcoded credentials
-- Use environment variables only
-- Follow the two-class secret incident contract
-
-### Routing
-
-- Path routing (default): app serves at root after StripPrefix
-- Browser URLs must be relative and path-safe
-- No root cookies or root redirects
-- No subdomain assumptions (unless explicitly approved)
-
-### Auth
-
-- Authentik ForwardAuth is frozen infrastructure
-- Consume trusted identity headers only:
-  - `X-authentik-username`
-  - `X-authentik-email`
-  - `X-authentik-name`
-  - `X-authentik-uid`
-  - `X-authentik-groups`
-- No second/internal authentication database
-
-### Database
-
-- **SQLite:** WAL mode, configurable path on Coolify-managed volume
-- **PostgreSQL:** isolated DB/user, `DATABASE_URL` injected by Coolify, no `CREATE DATABASE`
-- Migrations fail closed before app server boots
-- No migration generation inside container or at runtime
-
-### Container
-
-- Must not run as root
-- Internal port 3000 (default)
-- Implement `GET /healthz` returning `{"ok":true}` HTTP 200
-- Health check fails (HTTP 503) if DB/core services unreachable
-- Proper `.dockerignore` (exclude `.env`, `.git`, local dev assets)
-
----
+- Phase 0–10 are frozen and must not be reinterpreted or modified.
+- Follow the selected profile and the canonical platform contracts supplied by the Orchestrator.
+- Keep browser routing relative/path-safe where the profile requires it.
+- Use environment-variable-only runtime secrets; never introduce real credentials.
+- Preserve the profile's container, health, database, migration, and authentication invariants.
+- Executor self-report is evidence only; it never closes acceptance.
 
 ## NON-GOALS
 
-<From app-brief.json non_goals>
-
-- <non-goal 1>
-- <non-goal 2>
-- ...
-
----
+<Copy the bounded non-goals from app-brief.json>
 
 ## TESTS
 
-### Required Tests
+Run every command listed here before returning `SUCCESS`:
 
-<Exact commands from app-brief.json tests>
+<Exact required commands and profile-specific checks>
 
-### Profile-Specific Tests
-
-<Additional tests from templates/CONTRACTS.md based on profile>
-
-### Test Execution
-
-Run all tests locally before reporting SUCCESS. Report exact commands, exit codes, and results.
-
----
+For every executed test report the exact command, numeric exit code, and `passed`/`failed` result. `SUCCESS` is permitted only when every reported test has exit code `0` and result `passed`.
 
 ## OUTPUT
 
-Return **only** structured JSON matching the canonical executor result schema:
+Return only JSON matching `executor-result.schema.json`:
 
 ```json
 {
   "status": "SUCCESS | FAILED | ARCHITECTURE_BLOCKER",
-  "summary": "<concise implementation summary>",
-  "files_changed": ["<relative path>"],
+  "summary": "Concise result",
+  "files_changed": ["relative/path"],
   "tests": [
-    {
-      "command": "<test command>",
-      "exit_code": 0,
-      "result": "passed | failed"
-    }
+    {"command": "exact command", "exit_code": 0, "result": "passed"}
   ],
   "warnings": [],
   "architecture_blockers": [],
@@ -176,7 +93,7 @@ Return **only** structured JSON matching the canonical executor result schema:
 }
 ```
 
-If architecture boundaries would need to change, return:
+For an architecture blocker, stop before implementation and return no changed files and no tests:
 
 ```json
 {
@@ -185,40 +102,19 @@ If architecture boundaries would need to change, return:
   "files_changed": [],
   "tests": [],
   "warnings": [],
-  "architecture_blockers": ["Concrete decision Orchestrator must make"],
+  "architecture_blockers": ["Concrete decision required from the Orchestrator"],
   "recommended_follow_up": ["Bounded next decision or investigation"]
 }
 ```
 
----
+## EVIDENCE REQUIREMENTS
 
-## ACCEPTANCE CRITERIA
+Before reporting `SUCCESS`, verify and report that:
 
-Your implementation is accepted only when:
+1. all required tests passed;
+2. every changed path is inside the approved workspace;
+3. no secret or credential was introduced;
+4. the selected profile contract remains satisfied;
+5. no architecture, Git, deployment, or external control-plane authority was exercised.
 
-1. All required tests pass
-2. All profile-specific tests pass
-3. No files changed outside `apps/<slug>/`
-4. No secrets in diff
-5. Container builds successfully
-6. `/healthz` returns `{"ok":true}`
-7. Profile contract fully satisfied
-8. No architecture boundary changes
-
-The Orchestrator independently verifies all acceptance criteria. Your self-report is not acceptance.
-
----
-
-## CONSTRAINTS SUMMARY
-
-- **Workspace:** `apps/<slug>/` only
-- **Git:** No commit/push
-- **Deploy:** No deployment
-- **Control Plane:** No Coolify/Tailscale/Authentik/DNS changes
-- **Secrets:** None in Git/logs
-- **Architecture:** No changes without approval
-- **Scope:** Bounded to this app only
-
----
-
-**End of Executor Brief**
+The Orchestrator independently checks the real diff and original test output. Your result does not constitute acceptance.
