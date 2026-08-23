@@ -56,13 +56,8 @@
     "profile": "react-hono-sqlite",
     "rationale": "Shared state needed, no Python, no SSR, SQLite sufficient for low concurrency, path-safe, no origin isolation needed, ForwardAuth sufficient, no shadcn needed, backend required for sync."
   },
-  "orchestration": {
-    "kanban_task_id": null,
-    "executor_routing": "agy-gemini-3.7-flash-high",
-    "senior_review_required": false
-  },
   "metadata": {
     "created_at": "2026-08-22T14:00:00Z",
-    "created_by": "qwen3.7-plus"
+    "created_by": "portable-core-example"
   }
 }
