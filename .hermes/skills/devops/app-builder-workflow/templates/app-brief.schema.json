@@ -29,6 +29,11 @@
           "minLength": 1,
           "description": "Brief description of application purpose"
         },
+        "core_features": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "List of core features"
+        },
         "requirements": {
           "type": "object",
           "required": [

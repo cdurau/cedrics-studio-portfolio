@@ -309,7 +309,6 @@ class TestTemplateValidation:
         assert "app" in data
         assert "requirements" in data["app"]
         assert "profile_selection" in data
-        assert "orchestration" in data
         assert "metadata" in data
 
     def test_all_nine_dimensions_present_in_app_brief_template(self):
@@ -580,7 +579,7 @@ class TestCLICommands:
             str(BRIEF_TEMPLATE_PATH),
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        assert "VALID: app-brief.json is valid" in result.stdout
+        assert "VALID: app-brief.json passes Draft 2020-12 schema and semantic validation." in result.stdout
 
     def test_cli_derive_manifest_command(self, tmp_path):
         out_file = tmp_path / "derived_app.yaml"

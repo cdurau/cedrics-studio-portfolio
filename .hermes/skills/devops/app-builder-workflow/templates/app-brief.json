@@ -1,6 +1,5 @@
 {
   "schema": 1,
-  "_comment": "This is an instance document. For schema validation, see app-brief.schema.json",
   "app": {
     "name": "Shopping List",
     "slug": "shopping-list",
