@@ -185,6 +185,17 @@ class TestAgyJobStart:
         assert res.success is False
         assert "invalid" in res.error
 
+    def test_start_invalid_brief_missing_sections(self, temp_workspace: str, invalid_prompt_file: str):
+        res = start_agy_job("job1", FLASH_MODEL, temp_workspace, invalid_prompt_file)
+        assert res.success is False
+        assert "missing required sections" in res.error
+
+    def test_start_brief_with_secret_fails_without_echoing(self, temp_workspace: str, secret_prompt_file: str):
+        res = start_agy_job("job1", FLASH_MODEL, temp_workspace, secret_prompt_file)
+        assert res.success is False
+        assert "appears to contain a secret" in res.error
+        assert "1234567890" not in res.error
+
 
 # --- Test Status ---
 
@@ -212,60 +223,161 @@ class TestAgyJobStatus:
 
 class TestAgyJobResult:
     def test_result_success_clean(self):
+        # Executor self-report does not constitute acceptance (Hermes accepts).
+        # No commit/push/deploy/control-plane authority.
+        # Kanban owns the queue; agy-job owns execution.
         output = {
-            "status": "SUCCESS",
-            "summary": "Done",
-            "files_changed": ["a.txt"],
-            "tests": [{"command": "test", "exit_code": 0, "result": "passed"}],
-            "warnings": [],
-            "architecture_blockers": [],
-            "recommended_follow_up": []
+            "job_id": "job1",
+            "run_id": "run1",
+            "runner_status": "SUCCESS",
+            "exit_code": 0,
+            "agy_result": {
+                "status": "SUCCESS",
+                "summary": "Done",
+                "files_changed": ["a.txt"],
+                "tests": [{"command": "test", "exit_code": 0, "result": "passed"}],
+                "warnings": [],
+                "architecture_blockers": [],
+                "recommended_follow_up": []
+            }
         }
         runner = create_mock_runner(0, json.dumps(output))
         res = get_agy_job_result("job1", run_command=runner)
         assert res.success is True
         assert res.status == "SUCCESS"
 
-    def test_result_inner_failed_tests_reject_success(self):
+    def test_result_runner_failed_wins(self):
         output = {
-            "status": "SUCCESS",
-            "summary": "Done",
-            "files_changed": ["a.txt"],
-            "tests": [{"command": "test", "exit_code": 1, "result": "failed"}],
-            "warnings": []
+            "runner_status": "FAILED",
+            "exit_code": 1,
+            "agy_result": {
+                "status": "SUCCESS",
+                "summary": "Done",
+                "files_changed": [],
+                "tests": [],
+                "warnings": []
+            }
         }
         runner = create_mock_runner(0, json.dumps(output))
         res = get_agy_job_result("job1", run_command=runner)
         assert res.success is False
         assert res.status == "FAILED"
-        assert "failed test evidence" in res.error
+        assert "runner status is FAILED" in res.error
 
-    def test_result_missing_fields_fails_closed(self):
+    def test_result_nonzero_exit_code_fails(self):
         output = {
-            "status": "SUCCESS",
-            "summary": "Done"
+            "runner_status": "SUCCESS",
+            "exit_code": 1,
+            "agy_result": {
+                "status": "SUCCESS",
+                "summary": "Done",
+                "files_changed": [],
+                "tests": [],
+                "warnings": []
+            }
         }
         runner = create_mock_runner(0, json.dumps(output))
         res = get_agy_job_result("job1", run_command=runner)
         assert res.success is False
         assert res.status == "FAILED"
-        assert "missing required keys" in res.error
+        assert "runner exit code is 1" in res.error
+
+    def test_result_missing_agy_result_fails(self):
+        output = {
+            "runner_status": "SUCCESS",
+            "exit_code": 0
+        }
+        runner = create_mock_runner(0, json.dumps(output))
+        res = get_agy_job_result("job1", run_command=runner)
+        assert res.success is False
+        assert res.status == "FAILED"
+        assert "missing agy_result" in res.error
+
+    def test_result_malformed_json(self):
+        runner = create_mock_runner(0, "NOT JSON")
+        res = get_agy_job_result("job1", run_command=runner)
+        assert res.success is False
+        assert res.status == "FAILED"
+        assert "not JSON" in res.error
+
+    def test_result_inner_failed(self):
+        output = {
+            "runner_status": "SUCCESS",
+            "exit_code": 0,
+            "agy_result": {
+                "status": "FAILED",
+                "summary": "Done",
+                "files_changed": [],
+                "tests": [],
+                "warnings": []
+            }
+        }
+        runner = create_mock_runner(0, json.dumps(output))
+        res = get_agy_job_result("job1", run_command=runner)
+        assert res.success is False
+        assert res.status == "FAILED"
 
     def test_result_architecture_blocker(self):
         output = {
-            "status": "ARCHITECTURE_BLOCKER",
-            "summary": "Need change",
-            "files_changed": [],
-            "tests": [],
-            "warnings": [],
-            "architecture_blockers": ["blocker1"],
-            "recommended_follow_up": []
+            "runner_status": "SUCCESS",
+            "exit_code": 0,
+            "agy_result": {
+                "status": "ARCHITECTURE_BLOCKER",
+                "summary": "Need change",
+                "files_changed": [],
+                "tests": [],
+                "warnings": [],
+                "architecture_blockers": ["blocker1"],
+                "recommended_follow_up": []
+            }
         }
         runner = create_mock_runner(0, json.dumps(output))
         res = get_agy_job_result("job1", run_command=runner)
         assert res.success is False
         assert res.status == "ARCHITECTURE_BLOCKER"
         assert "blocker1" in res.architecture_blockers
+
+    def test_result_runner_stopped(self):
+        output = {
+            "runner_status": "STOPPED",
+            "exit_code": 0,
+            "agy_result": None
+        }
+        runner = create_mock_runner(0, json.dumps(output))
+        res = get_agy_job_result("job1", run_command=runner)
+        assert res.success is False
+        assert res.status == "FAILED"
+        assert "runner status is STOPPED" in res.error
+
+    def test_result_unknown_runner_status(self):
+        output = {
+            "runner_status": "UNKNOWN_XYZ",
+            "exit_code": 0,
+            "agy_result": None
+        }
+        runner = create_mock_runner(0, json.dumps(output))
+        res = get_agy_job_result("job1", run_command=runner)
+        assert res.success is False
+        assert res.status == "FAILED"
+        assert "unknown runner status: UNKNOWN_XYZ" in res.error
+
+    def test_result_unknown_inner_status(self):
+        output = {
+            "runner_status": "SUCCESS",
+            "exit_code": 0,
+            "agy_result": {
+                "status": "MAGIC_STATUS",
+                "summary": "Done",
+                "files_changed": [],
+                "tests": [],
+                "warnings": []
+            }
+        }
+        runner = create_mock_runner(0, json.dumps(output))
+        res = get_agy_job_result("job1", run_command=runner)
+        assert res.success is False
+        assert res.status == "FAILED"
+        assert "unknown agy_result status: MAGIC_STATUS" in res.error
 
 
 # --- Test Command Builders (Array no Shell) ---

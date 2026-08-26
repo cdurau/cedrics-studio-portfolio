@@ -608,6 +608,18 @@ def start_agy_job(
     ):
         if error:
             return _fail_start(job_id or "", error)
+            
+    try:
+        brief_content = Path(executor_brief_path).read_text(encoding="utf-8")
+    except OSError as exc:
+        return _fail_start(job_id, f"failed to read executor brief: {type(exc).__name__}")
+        
+    if contains_secret(brief_content):
+        return _fail_start(job_id, "executor brief appears to contain a secret")
+        
+    if not executor_brief_has_required_sections(brief_content):
+        return _fail_start(job_id, "executor brief is missing required sections")
+
     command = build_start_command(
         job_id, model, workspace, executor_brief_path, agy_job_bin=agy_job_bin
     )
@@ -674,6 +686,14 @@ def get_agy_job_status(
             "error": "agy-job status missing status field",
             "command": command,
         }
+    if status not in TERMINAL_STATUSES and status not in ACTIVE_STATUSES:
+        return {
+            "job_id": job_id,
+            "status": "FAILED",
+            "success": False,
+            "error": f"unknown status: {status}",
+            "command": command,
+        }
     timed_out = job_exceeded_timeout(status, elapsed_seconds, timeout_seconds)
     if timed_out:
         return {
@@ -723,8 +743,8 @@ def _parse_json_object(text: str) -> Optional[Dict[str, Any]]:
 
 
 def unwrap_result_payload(payload: Mapping[str, Any]) -> Dict[str, Any]:
-    """Accept either a bare result object or a runner wrapper with result={}."""
-    inner = payload.get("result")
+    """Accept either a bare result object or a runner wrapper with agy_result={}."""
+    inner = payload.get("agy_result")
     if isinstance(inner, Mapping) and inner.get("status"):
         return dict(inner)
     return dict(payload)
@@ -735,7 +755,25 @@ def parse_agy_result(job_id: str, stdout: str) -> AgJobResult:
     payload = _parse_json_object(stdout)
     if payload is None:
         return _fail_result(job_id, "agy-job result is missing or not JSON")
+        
+    if "runner_status" in payload:
+        runner_status = str(payload.get("runner_status") or "").upper()
+        if runner_status not in TERMINAL_STATUSES:
+            return _fail_result(job_id, f"unknown runner status: {runner_status}")
+        if runner_status != "SUCCESS":
+            return _fail_result(job_id, f"runner status is {runner_status}")
+            
+        exit_code = payload.get("exit_code")
+        if exit_code not in (0, "0"):
+            return _fail_result(job_id, f"runner exit code is {exit_code}")
+            
+        if payload.get("agy_result") is None:
+            return _fail_result(job_id, "missing agy_result")
+
     inner = unwrap_result_payload(payload)
+    if not isinstance(inner, dict):
+        return _fail_result(job_id, "agy-job result inner payload is not an object")
+
     missing = [key for key in REQUIRED_RESULT_KEYS if key not in inner]
     if missing:
         return _fail_result(
@@ -745,6 +783,8 @@ def parse_agy_result(job_id: str, stdout: str) -> AgJobResult:
     status = str(inner.get("status") or "").upper()
     if not status:
         return _fail_result(job_id, "agy-job result has empty status")
+    if status not in ("SUCCESS", "FAILED", "ARCHITECTURE_BLOCKER"):
+        return _fail_result(job_id, f"unknown agy_result status: {status}")
     files_changed = inner.get("files_changed")
     tests = inner.get("tests")
     warnings = inner.get("warnings")
