@@ -218,6 +218,28 @@ class TestAgyJobStatus:
         assert res["success"] is False
         assert res["status"] == "FAILED"
 
+    def test_status_job_failed(self):
+        # success=True means CLI query succeeded, not that the job succeeded
+        runner = create_mock_runner(0, '{"status": "FAILED"}')
+        res = get_agy_job_status("job1", run_command=runner)
+        assert res["success"] is True  # CLI query succeeded
+        assert res["status"] == "FAILED"  # but job failed
+
+    def test_status_job_stopped(self):
+        # success=True means CLI query succeeded, not that the job succeeded
+        runner = create_mock_runner(0, '{"status": "STOPPED"}')
+        res = get_agy_job_status("job1", run_command=runner)
+        assert res["success"] is True  # CLI query succeeded
+        assert res["status"] == "STOPPED"  # but job was stopped
+
+    def test_status_cli_exit_nonzero(self):
+        # CLI command itself failed (e.g., job not found)
+        runner = create_mock_runner(2, '', 'job not found')
+        res = get_agy_job_status("job1", run_command=runner)
+        assert res["success"] is False
+        assert res["status"] == "FAILED"
+        assert "agy-job status failed" in res["error"]
+
 
 # --- Test Result ---
 
@@ -378,6 +400,35 @@ class TestAgyJobResult:
         assert res.success is False
         assert res.status == "FAILED"
         assert "unknown agy_result status: MAGIC_STATUS" in res.error
+
+    def test_result_cli_exit_nonzero(self):
+        # CLI command itself failed (e.g., job not found)
+        runner = create_mock_runner(2, '', 'result is not available yet')
+        res = get_agy_job_result("job1", run_command=runner)
+        assert res.success is False
+        assert res.status == "FAILED"
+        assert "agy-job result failed" in res.error
+
+    def test_result_success_with_blockers_rejected(self):
+        # SUCCESS with non-empty architecture_blockers is contradictory
+        output = {
+            "runner_status": "SUCCESS",
+            "exit_code": 0,
+            "agy_result": {
+                "status": "SUCCESS",
+                "summary": "Done",
+                "files_changed": ["a.txt"],
+                "tests": [{"command": "test", "exit_code": 0, "result": "passed"}],
+                "warnings": [],
+                "architecture_blockers": ["blocker1"],
+                "recommended_follow_up": []
+            }
+        }
+        runner = create_mock_runner(0, json.dumps(output))
+        res = get_agy_job_result("job1", run_command=runner)
+        assert res.success is False
+        assert res.status == "FAILED"
+        assert "non-empty architecture_blockers" in res.error
 
 
 # --- Test Command Builders (Array no Shell) ---

@@ -645,7 +645,15 @@ def get_agy_job_status(
     elapsed_seconds: Optional[int] = None,
     timeout_seconds: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Get agy-job status as a dict. Fail-closed on parse/command errors."""
+    """Get agy-job status as a dict. Fail-closed on parse/command errors.
+    
+    Semantics of 'success':
+    - success=True means the CLI query succeeded and returned a canonical status.
+    - success=True does NOT mean the job itself succeeded. Check 'status' field.
+    - success=False means the CLI query failed (timeout, non-zero exit, malformed output).
+    
+    The 'status' field contains the actual job state (RUNNING, SUCCESS, FAILED, STOPPED, etc.).
+    """
     error = validate_job_id(job_id)
     if error:
         return {"job_id": job_id or "", "status": "FAILED", "success": False, "error": error}
@@ -807,6 +815,13 @@ def parse_agy_result(job_id: str, stdout: str) -> AgJobResult:
                     job_id,
                     "agy-job SUCCESS result contains failed test evidence",
                 )
+        # Defense-in-depth: SUCCESS with non-empty architecture_blockers is contradictory.
+        # The real runner marks this as runner-FAILED, but we reject it here too.
+        if blockers:
+            return _fail_result(
+                job_id,
+                "agy-job SUCCESS result has non-empty architecture_blockers",
+            )
     ok = status == "SUCCESS"
     return AgJobResult(
         job_id=job_id,
