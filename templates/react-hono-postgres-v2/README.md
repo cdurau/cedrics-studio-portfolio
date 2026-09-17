@@ -18,7 +18,7 @@ A lightweight, production-capable starting point for single-page React apps back
 - **Frontend**: React 19, Vite, Tailwind CSS
 - **Backend**: Hono (running on Node.js 22+)
 - **Database**: PostgreSQL (via Drizzle ORM and `pg`)
-- **Auth**: Trusted Authentik identity headers via Traefik ForwardAuth (evaluated before `StripPrefix`)
+- **Auth**: Trusted Authentik identity headers via Traefik ForwardAuth (v2: proto/host rewrite middleware runs **before** ForwardAuth; no StripPrefix)
 
 ## 3. Installation
 1. Ensure Node.js 22+ is installed (and Docker for integration tests).
@@ -49,22 +49,23 @@ The application requires running the frontend and backend simultaneously:
 ## 8. Coolify Dockerfile & Container Settings
 - **Base Directory**: `apps/<slug>` within the monorepo.
 - **Internal Port**: Listens on port `3000` (`EXPOSE 3000`); no host ports are published.
-- **Health Check**: `GET /healthz` returning `{"ok":true}` HTTP 200.
-- **Routing Integration**: Path-routed via Traefik `StripPrefix`.
+- **Health Check**: `GET /healthz` returning `{"ok":true}` HTTP 200 (liveness, no DB query). Readiness `GET /readyz` verifies PostgreSQL.
+- **Routing Integration**: Per-app origin `<slug>.exampletailnet.ts.net` via dedicated Tailscale Service + dedicated Traefik Host router, **no StripPrefix**.
 - **Runtime Environment**: Injected dynamically by Coolify at runtime (no baked credentials).
+- **Coolify app creation**: `inject_build_args_to_dockerfile` must be set to `false` (build-arg injection leaks per-app secrets into image metadata; see S0 incident report). The bounded provisioner enforces this.
 
 ## 9. CI/CD & Pipeline
 - **GitHub Actions**: Builds are triggered using a path filter for the app directory: `apps/<slug>/**` (not the template directory).
 - **Tailscale WIF**: GitHub Actions authenticates via Tailscale Workload Identity Federation to securely interact with the private environment.
 - **No Public Webhooks**: The Coolify Deploy API is triggered internally via the private network using `COOLIFY_API_TOKEN` and `COOLIFY_<APP_SLUG>_UUID`.
 
-## 10. Routing (Path vs Subdomain)
-- This template uses **Path Routing** (default). Vite is configured with a relative base (`./`), and all API requests are relative (`./api/...`).
-- Traefik `StripPrefix` handles routing, mapping `https://<apps-host>/<slug>/` internally to `/`.
-- Dedicated subdomains are reserved for future origin-isolated apps and are not provisioned in Phase 10.
+## 10. Routing (Per-App Tailscale-Service Origin)
+- This template uses **Host routing on a per-app origin** (`<slug>.exampletailnet.ts.net`, Studio App Contract v2). Vite is configured with absolute base (`/`), and all API requests are absolute origin paths (`/api/...`).
+- The app sees `/` for all routes; Traefik matches `Host(\`<slug>.exampletailnet.ts.net\`)` and there is **no StripPrefix** and no path prefix anywhere.
+- The per-app Tailscale Service (VIP + automatic Tailscale TLS) is created once by the bounded provisioner; ordinary redeploys reuse it.
 
 ## 11. Authentik Integration
-- **ForwardAuth Middleware**: Authentication happens at the Traefik layer via Authentik ForwardAuth *before* `StripPrefix` executes.
+- **ForwardAuth Middleware**: Authentication happens at the Traefik layer via Authentik ForwardAuth on the dedicated per-app Host router. Protocol/host rewrite middleware runs **before** ForwardAuth so Authentik sees the real HTTPS origin and builds correct callback/redirect URLs.
 - **Frozen Infrastructure**: This ForwardAuth configuration is frozen infrastructure and is not generated or modified by the template.
 - **Trusted Identity Headers**: The app reads identity from headers (`X-authentik-username`, `X-authentik-email`, `X-authentik-name`, `X-authentik-uid`, `X-authentik-groups`), which are trusted only behind this proxy contract. No secondary or internal authentication database is used.
 
@@ -82,3 +83,4 @@ When creating a new application from this template into `apps/<slug>`:
 6. Update `.env.example` with placeholders for any new app-specific environment variables.
 7. Review Docker and Coolify configuration settings (base directory `apps/<slug>`, internal port 3000, health check `/healthz`).
 8. Create an app-specific deployment workflow (with path filter `apps/<slug>/**`) and configure the `COOLIFY_<APP_SLUG>_UUID` secret in repository settings outside the template.
+9. Ensure the Coolify app is created with `inject_build_args_to_dockerfile=false` and the per-app Tailscale Service/origin `<slug>.exampletailnet.ts.net` exists before first deploy.

@@ -3,15 +3,15 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 describe("Contract Verification Tests (react-hono-postgres-v2)", () => {
-  it("Vite config base is relative", () => {
+  it("Vite config base is absolute root (v2: root paths, no StripPrefix)", () => {
     const viteConfig = readFileSync(join(process.cwd(), "vite.config.ts"), "utf-8");
-    expect(viteConfig).toMatch(/base:\s*['"]\.\/['"]/);
+    expect(viteConfig).toMatch(/base:\s*['"]\/['"]/);
   });
 
-  it("Client fetches are relative", () => {
+  it("Client fetches are absolute origin paths (v2)", () => {
     const appTsx = readFileSync(join(process.cwd(), "source/client/App.tsx"), "utf-8");
-    expect(appTsx).toMatch(/fetch\(['"]\.\/api\//);
-    expect(appTsx).not.toMatch(/fetch\(['"]\/api\//);
+    expect(appTsx).toMatch(/fetch\(['"]\/api\//);
+    expect(appTsx).not.toMatch(/fetch\(['"]\.\/api\//);
   });
 
   it("Server routes are mounted at root (Host routing, no StripPrefix)", () => {

@@ -6,7 +6,11 @@ slug: s0-smoke
 profile: react-hono-postgres-v2
 routing:
   mode: service
-  origin: s0-test.exampletailnet.ts.net
+  # Contract invariant: origin MUST be <slug>.exampletailnet.ts.net.
+  # Known S0 deviation: the S0-2/3 smoke runtime served on the pre-existing
+  # S0-0 service `s0-test.exampletailnet.ts.net` (evidence doc). Future apps must
+  # use the slug-conforming origin below.
+  origin: s0-smoke.exampletailnet.ts.net
   base_path: /
 database:
   type: postgres

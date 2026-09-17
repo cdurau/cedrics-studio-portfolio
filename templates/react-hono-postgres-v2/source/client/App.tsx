@@ -12,7 +12,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch('./api/entries')
+    fetch('/api/entries')
       .then((res) => res.json())
       .then((data) => {
         if (data.entries) setEntries(data.entries);
@@ -23,7 +23,7 @@ export default function App() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!content.trim()) return;
-    const res = await fetch('./api/entries', {
+    const res = await fetch('/api/entries', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content }),
