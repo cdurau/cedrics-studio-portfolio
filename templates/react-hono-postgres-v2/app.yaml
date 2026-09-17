@@ -1,0 +1,24 @@
+# Additive v2 smoke profile manifest — Studio App Contract v2 (Rev. 3)
+# Per-app Tailscale-Service FQDN origin, Host routing WITHOUT StripPrefix.
+# Frozen v1 templates/react-hono-postgres and templates/CONTRACTS.md are untouched.
+schema: 1
+slug: s0-smoke
+profile: react-hono-postgres-v2
+routing:
+  mode: service
+  origin: s0-test.exampletailnet.ts.net
+  base_path: /
+database:
+  type: postgres
+auth:
+  forward_auth: true
+  method: authentik-forward-auth
+  identity_headers:
+    - X-authentik-username
+    - X-authentik-email
+    - X-authentik-name
+    - X-authentik-uid
+    - X-authentik-groups
+health:
+  liveness: /healthz
+  readiness: /readyz
