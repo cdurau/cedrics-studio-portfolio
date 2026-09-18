@@ -10,7 +10,7 @@
     "build": "vite build && tsc -p tsconfig.server.json",
     "start": "node dist/server/server/server.js",
     "test": "npm run test:unit",
-    "test:unit": "vitest run tests/auth.test.ts tests/contract.test.ts tests/proxySecret.test.ts",
+    "test:unit": "vitest run tests/auth.test.ts tests/contract.test.ts tests/proxySecret.test.ts tests/guard.test.ts",
     "test:integration": "bash tests/run-integration.sh",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit",
     "db:generate": "drizzle-kit generate",

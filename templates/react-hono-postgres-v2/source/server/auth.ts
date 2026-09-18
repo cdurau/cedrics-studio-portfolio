@@ -9,14 +9,17 @@ export type AuthentikIdentity = {
 };
 
 export function getAuthentikIdentity(c: Context): AuthentikIdentity | null {
-  const username = c.req.header("x-authentik-username");
-  if (!username) {
+  // G2: a missing uid must never authenticate (review S2). The uid — not the
+  // username — is the stable identity key that the injector also enforces,
+  // so it is required here too.
+  const uid = c.req.header("x-authentik-uid");
+  if (!uid) {
     return null;
   }
 
+  const username = c.req.header("x-authentik-username") || "";
   const email = c.req.header("x-authentik-email") || "";
   const name = c.req.header("x-authentik-name") || "";
-  const uid = c.req.header("x-authentik-uid") || "";
 
   const groupsHeader = c.req.header("x-authentik-groups") || "";
   const groups = groupsHeader

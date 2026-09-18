@@ -7,36 +7,26 @@ import { Hono } from "hono";
 import { db } from "./db/client.js";
 import { entries } from "./db/schema.js";
 import { getAuthentikIdentity } from "./auth.js";
-import {
-  proxySecretConfigured,
-  verifyProxySecretHeader,
-} from "./proxySecret.js";
+import { proxySecretConfigured } from "./proxySecret.js";
+import { proxySecretGuard } from "./guard.js";
 
 const port = Number.parseInt(process.env.PORT ?? "3000", 10);
 const clientDir = "dist/client";
 
 const app = new Hono();
 
-// G2 fail-closed guard: every API route requires (a) a syntactically valid
-// STUDIO_PROXY_SECRET_SHA256 runtime env var and (b) an incoming
-// X-Studio-Proxy-Secret header whose SHA-256 matches the configured digest.
-// Health endpoints stay outside this guard (they carry no DB data and must
-// answer for liveness/readiness probes).
-app.use("/api/*", async (c, next) => {
-  const header = c.req.header("X-Studio-Proxy-Secret");
-  if (!verifyProxySecretHeader(header)) {
-    return c.json({ error: "proxy secret verification failed" }, 403);
-  }
-  await next();
-});
+// G2 fail-closed guard (review S2): global deny-by-default via the shared
+// proxySecretGuard — see guard.ts for the contract and health exceptions.
+app.use("*", proxySecretGuard);
 
 // Boot-time cross-check (G2): in production the app refuses to start without
-// a syntactically valid digest. Local dev without auth infrastructure can set
-// SKIP_PROXY_SECRET_BOOT_CHECK=1 explicitly.
-if (
-  !proxySecretConfigured() &&
-  process.env.SKIP_PROXY_SECRET_BOOT_CHECK !== "1"
-) {
+// a syntactically valid digest. Local dev without auth infrastructure can
+// set SKIP_PROXY_SECRET_BOOT_CHECK=1 explicitly; it is ignored whenever
+// NODE_ENV=production (review S2).
+const skipBootCheck =
+  process.env.SKIP_PROXY_SECRET_BOOT_CHECK === "1" &&
+  process.env.NODE_ENV !== "production";
+if (!proxySecretConfigured() && !skipBootCheck) {
   console.error(
     "fatal: STUDIO_PROXY_SECRET_SHA256 missing/malformed — refusing to start (fail-closed)",
   );
