@@ -1,0 +1,7 @@
+class: user-app
+auth:
+  method: better-auth
+forward_auth: false
+health:
+  liveness: /healthz
+  readiness: /readyz

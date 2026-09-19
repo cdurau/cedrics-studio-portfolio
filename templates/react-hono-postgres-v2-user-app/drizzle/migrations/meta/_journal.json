@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1787276511266,
+      "tag": "0000_sad_nocturne",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1789810325394,
+      "tag": "0001_smiling_martin_li",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1789810338978,
+      "tag": "0002_rls_and_grants",
+      "breakpoints": true
+    }
+  ]
+}
