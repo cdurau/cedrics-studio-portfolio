@@ -8,6 +8,12 @@ import { db } from "./db/client.js";
 import { entries, users } from "./db/schema.js";
 import { requireUser, withUser } from "./guard.js";
 import { auth } from "./auth.js";
+import { validateRuntimeEnv } from "./env.js";
+
+// Fail-closed: refuse to boot with missing/malformed runtime secrets
+// (Terra-Review 2026-09-19 M1 — better-auth 1.7.5 would silently fall back
+// to its built-in default secret).
+validateRuntimeEnv();
 
 const port = Number.parseInt(process.env.PORT ?? "3000", 10);
 const clientDir = "dist/client";
@@ -41,10 +47,10 @@ app.get("/api/me", async (c) => {
   const session = await auth.api.getSession({
     headers: c.req.raw.headers
   });
-  return c.json({ 
+  return c.json({
     userId,
     authUserId: session?.user?.id,
-    email: session?.user?.email 
+    email: session?.user?.email
   });
 });
 

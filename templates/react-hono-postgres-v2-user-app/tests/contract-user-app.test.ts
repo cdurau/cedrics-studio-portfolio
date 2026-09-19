@@ -19,9 +19,15 @@ describe("user-app auth contract (static)", () => {
     expect(JSON.parse(installed).dependencies["better-auth"].version).toBe("1.7.5");
   });
 
-  it("@node-rs/argon2 is pinned exactly", () => {
+  it("@node-rs/argon2 is pinned exactly to 2.2.1", () => {
     const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-    expect(pkg.dependencies["@node-rs/argon2"]).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(pkg.dependencies["@node-rs/argon2"]).toBe("2.2.1");
+    const lock = readFileSync(new URL("../package-lock.json", import.meta.url), "utf8");
+    expect(lock).toContain('"@node-rs/argon2": "2.2.1"');
+    const installed = execSync("npm ls @node-rs/argon2 --json", {
+      cwd: new URL("..", import.meta.url).pathname,
+    }).toString();
+    expect(JSON.parse(installed).dependencies["@node-rs/argon2"].version).toBe("2.2.1");
   });
 
   it("auth config: implicit linking disabled, sign-up closed, cookie cache off, DB rate limit on", async () => {

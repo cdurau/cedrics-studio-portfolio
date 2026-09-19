@@ -1,5 +1,6 @@
 import * as readline from "node:readline/promises";
 import { seedUser, resetPassword, revokeSessions } from "./admin.js";
+import { validateRuntimeEnv } from "./env.js";
 
 // Interactive admin CLI — run only inside the container or on the host
 // (npm run admin:seed-user | admin:reset-password | admin:revoke-sessions <email>).
@@ -34,6 +35,9 @@ function hideInput(query: string): Promise<string> {
 }
 
 async function main() {
+  // Admin operations use the auth context (argon2 hash, session revocation);
+  // refuse to run without the required runtime secrets (fail-closed, M1).
+  validateRuntimeEnv();
   const command = process.argv[2];
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   try {

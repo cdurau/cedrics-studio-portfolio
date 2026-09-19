@@ -11,18 +11,18 @@ export async function requireUser(c: Context, next: Next) {
     await next();
     return;
   }
-  
+
   const session = await auth.api.getSession({
     headers: c.req.raw.headers
   });
-  
+
   if (!session || !session.user) {
     return c.json({ error: "Unauthorized" }, 401);
   }
-  
+
   const userRows = await db.select().from(users).where(eq(users.authUserId, session.user.id));
   const appUser = userRows[0];
-  
+
   if (!appUser) {
     return c.json({ error: "User mapping not found" }, 401);
   }

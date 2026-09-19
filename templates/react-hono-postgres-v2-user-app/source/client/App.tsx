@@ -121,7 +121,7 @@ export default function App() {
           Add
         </button>
       </form>
-      
+
       {loading ? (
         <p>Loading...</p>
       ) : (

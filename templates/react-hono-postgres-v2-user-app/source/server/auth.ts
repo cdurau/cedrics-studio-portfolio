@@ -4,6 +4,7 @@ import { genericOAuth } from "better-auth/plugins";
 import { db } from "./db/client.js";
 import * as authSchema from "./db/schema.js";
 import { hash, verify } from "@node-rs/argon2";
+import { trustedProxiesFromEnv } from "./env.js";
 
 // Argon2id parameters (RFC 9106 recommended profile).
 // Format: $argon2id$v=19$m=19456,t=2,p=1$<salt>$<hash> — Appwrite-import
@@ -104,13 +105,23 @@ export const auth = betterAuth({
       httpOnly: true,
       sameSite: "lax",
     },
+    // Terra-Review 2026-09-19 (M2): behind Traefik every request carries a
+    // multi-hop X-Forwarded-For. Without trustedProxies, @better-auth/core
+    // (ip.mjs getIPFromHeader) returns null for multi-value chains and the
+    // rate limiter collapses into the global "no-trusted-ip" bucket —
+    // fail-safe against brute force, but one bad client can lock out every
+    // login. Configure the Traefik CIDR via BETTER_AUTH_TRUSTED_PROXIES;
+    // only single-hop direct deployments may omit it.
+    ...(trustedProxiesFromEnv() ? { ipAddress: { trustedProxies: trustedProxiesFromEnv() } } : {}),
   },
   databaseHooks: {
     user: {
       create: {
         after: async (user) => {
           // Identity mapping: app-owned users(id uuid) ← auth_user_id.
-          await db.insert(authSchema.users).values({ authUserId: user.id });
+          // ON CONFLICT safe (unique auth_user_id): a retried hook or an
+          // already-mapped user must not abort the create flow.
+          await db.insert(authSchema.users).values({ authUserId: user.id }).onConflictDoNothing();
         },
       },
     },
