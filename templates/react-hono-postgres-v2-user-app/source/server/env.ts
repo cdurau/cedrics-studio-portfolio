@@ -26,25 +26,30 @@ export function parseTrustedProxies(raw: string | undefined): string[] | undefin
 // IPv4: four strict octets, optional /0-32. IPv6: sane hex/colon/dot form,
 // optional /0-128. Better Auth parses via its own CIDR parser; this boot check
 // rejects clearly invalid entries before they are silently ignored.
+// Strict IP/CIDR validation via Node's net.isIP (Terra re-review 3: loose
+// regex accepted invalid IPv6 forms like "::::" / "1:2" / "2001:db8:::1",
+// oversized groups like "12345::", invalid embedded IPv4 like
+// "::ffff:999.1.1.1", and leading-zero IPv4 like "192.168.001.1"; better-auth
+// would then discard them at runtime and production could boot with an
+// effectively empty proxy list).
+import { isIP } from "node:net";
+
 function isValidIpOrCidr(entry: string): boolean {
-  const slash = entry.indexOf("/");
+  const slash = entry.lastIndexOf("/");
   const addr = slash === -1 ? entry : entry.slice(0, slash);
   const prefix = slash === -1 ? undefined : entry.slice(slash + 1);
+
+  const version = isIP(addr);
+  if (version === 0) return false;
 
   if (prefix !== undefined) {
     if (!/^\d+$/.test(prefix)) return false;
     const bits = Number(prefix);
-    const max = addr.includes(":") ? 128 : 32;
+    const max = version === 6 ? 128 : 32;
     if (!Number.isInteger(bits) || bits < 0 || bits > max) return false;
   }
 
-  if (addr.includes(":")) {
-    // IPv6 (loose shape: hex groups/`::`, embedded v4 dots allowed).
-    return addr.includes(":") && /^[0-9a-fA-F:.]+$/.test(addr) && addr.length <= 45;
-  }
-  const octets = addr.split(".");
-  if (octets.length !== 4) return false;
-  return octets.every((o) => /^\d{1,3}$/.test(o) && Number(o) <= 255);
+  return true;
 }
 
 // Comma-separated CIDR/IP list for advanced.ipAddress.trustedProxies

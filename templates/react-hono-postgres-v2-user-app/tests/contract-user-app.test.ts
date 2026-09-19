@@ -121,6 +121,17 @@ describe("user-app auth contract (static)", () => {
     // prefix bounds
     expect(() => parseTrustedProxies("100.64.0.0/33")).toThrow();
     expect(() => parseTrustedProxies("10.0.0.0/32")).not.toThrow();
+    // strict IP forms (terra re-review 3): invalid IPv6 shapes, oversized
+    // groups, invalid embedded IPv4, leading-zero IPv4 → all rejected
+    expect(() => parseTrustedProxies("::::")).toThrow();
+    expect(() => parseTrustedProxies("1:2")).toThrow();
+    expect(() => parseTrustedProxies("2001:db8:::1")).toThrow();
+    expect(() => parseTrustedProxies("12345::")).toThrow();
+    expect(() => parseTrustedProxies("::ffff:999.1.1.1")).toThrow();
+    expect(() => parseTrustedProxies("192.168.001.1")).toThrow();
+    // valid forms must keep passing
+    expect(parseTrustedProxies("2001:db8::/32")).toEqual(["2001:db8::/32"]);
+    expect(parseTrustedProxies("::ffff:100.64.0.1")).toEqual(["::ffff:100.64.0.1"]);
   });
 
   it("env validation: production requires validated non-empty trustedProxies", async () => {
