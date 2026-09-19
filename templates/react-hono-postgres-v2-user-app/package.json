@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "echo 'Run dev:server and dev:client in separate terminals' && exit 1",
-    "dev:server": "tsx --watch source/server/server.ts",
-    "dev:client": "vite",
+    "dev:server": "NODE_ENV=development tsx --watch source/server/server.ts",
+    "dev:client": "NODE_ENV=development vite",
     "build": "vite build && tsc -p tsconfig.server.json",
     "start": "node dist/server/server/server.js",
     "test": "npm run test:unit",

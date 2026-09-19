@@ -93,7 +93,6 @@ export function validateRuntimeEnv(): void {
           problems.push("BETTER_AUTH_SECRETS versions must be unique (duplicates found)");
           break;
         }
-        seenVersions.add(match[1]);
         // Claude review 2026-09-19 (MEDIUM-1): format validity alone accepted
         // placeholder secrets copied from the checked-in .env.example
         // ("1:replace-with-generated-secret" booted). A repo placeholder is

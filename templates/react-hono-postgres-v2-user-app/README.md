@@ -29,6 +29,10 @@ Studio user-app profile implementing the `user-app` auth contract from `template
 - `npm run admin:reset-password` — resets a credential password (does **not** end existing sessions — for a compromised password also run `admin:revoke-sessions` afterwards).
 - `npm run admin:revoke-sessions <email>` — incident revoke: deletes all server-side sessions.
 
+## Local development
+
+`npm run dev:server` / `npm run dev:client` set `NODE_ENV=development` themselves — this is required. The boot validation treats **every** `NODE_ENV` other than `development` and `test` as production-like (including an unset one) and then demands `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `BETTER_AUTH_TRUSTED_PROXIES`, and refuses `TEST_OIDC_ISSUER`. That default is deliberate: it fails closed when Coolify overwrites `NODE_ENV` or drops it. For the same reason `.env.example` carries no `NODE_ENV=development` line — copied into a real `.env`, it would switch the hardening off.
+
 ## Tests
 
 - `npm run test:unit` — static contract tests (pins, config assertions, header scan, no-literals migration check).

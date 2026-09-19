@@ -85,16 +85,18 @@ describe("user-app auth contract (static)", () => {
       const saved = { ...process.env };
       try {
         Object.assign(process.env, base, env);
-        // simulate non-production (LOW-6: restore ALL touched keys — base
-        // values must not leak into following tests)
+        // simulate non-production
         process.env.NODE_ENV = "test";
-        process.env.TEST_OIDC_ISSUER = "";
         delete process.env.TEST_OIDC_ISSUER;
         validateRuntimeEnv();
         return "ok";
       } catch {
         return "rejected";
       } finally {
+        // LOW-8: the previous version only re-assigned `saved`, so keys that
+        // did not exist before (base + env) stayed set for following tests.
+        // Clear everything first, then restore the snapshot.
+        for (const k of Object.keys(process.env)) delete process.env[k];
         Object.assign(process.env, saved);
       }
     };
@@ -208,6 +210,42 @@ describe("user-app auth contract (static)", () => {
       } finally {
         Object.assign(process.env, saved);
       }
+    }
+  });
+
+  // HIGH-3 (claude re-review 2026-09-19): the placeholder denylist in env.ts
+  // and the placeholder actually written in .env.example drifted apart in the
+  // same commit — the denylist matched "replace-with"/"changeme" while
+  // .env.example shipped "generate-a-real-secret-at-least-32-chars-long",
+  // which passed every check and booted. Asserting a COPY of the placeholder
+  // cannot catch that. This test reads the shipped file, so the denylist and
+  // the file can never drift apart again.
+  it("the placeholder actually shipped in .env.example is refused at boot (HIGH-3)", async () => {
+    const { validateRuntimeEnv } = await import("../source/server/env.js");
+    const envExample = readFileSync(new URL("../.env.example", import.meta.url), "utf8");
+
+    const line = envExample
+      .split("\n")
+      .map((l) => l.trim())
+      .find((l) => l.startsWith("BETTER_AUTH_SECRETS="));
+    expect(line, ".env.example must document BETTER_AUTH_SECRETS").toBeDefined();
+
+    const shipped = line!.slice("BETTER_AUTH_SECRETS=".length).trim();
+    expect(shipped, "the documented value must not be empty").toBeTruthy();
+
+    const saved = { ...process.env };
+    try {
+      process.env.NODE_ENV = "test";
+      process.env.BETTER_AUTH_URL = "https://x";
+      process.env.DATABASE_URL = "postgresql://x";
+      delete process.env.TEST_OIDC_ISSUER;
+      process.env.BETTER_AUTH_SECRETS = shipped;
+      // Whoever copies .env.example unchanged must not get a booting app:
+      // a value published in this repository is as public as a default secret.
+      expect(() => validateRuntimeEnv()).toThrow();
+    } finally {
+      for (const k of Object.keys(process.env)) delete process.env[k];
+      Object.assign(process.env, saved);
     }
   });
 

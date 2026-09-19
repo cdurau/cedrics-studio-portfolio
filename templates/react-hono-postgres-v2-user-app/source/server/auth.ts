@@ -6,13 +6,15 @@ import * as authSchema from "./db/schema.js";
 import { hash, verify } from "@node-rs/argon2";
 import { trustedProxiesFromEnv } from "./env.js";
 
-// No placeholder OAuth fallbacks (claude review 2026-09-19, MEDIUM-2): the
-// previous `|| "test-client"` fallbacks meant a NODE_ENV mishap started the
-// app silently with publicly known credentials and no proxy list. Missing
-// Google credentials now fail the boot via validateRuntimeEnv (env.ts,
-// production-like hardened) — they are required there. Dev/test without
-// credentials can still import the module for static contract checks; the
-// Google provider is simply never exercised in such runs.
+// OAuth credentials (claude review 2026-09-19, MEDIUM-2 / LOW-7).
+// The literals below are NOT a safety net — they exist only so that a
+// dev/test run without Google credentials can still import this module for
+// the static contract checks. What actually protects production is
+// validateRuntimeEnv() in env.ts: it requires GOOGLE_CLIENT_ID and
+// GOOGLE_CLIENT_SECRET for every boot that is not explicitly
+// NODE_ENV=development or =test, so a production process never reaches the
+// fallback. Do not treat these constants as "harmless defaults" — if the
+// env check is ever loosened, they become publicly known credentials again.
 const googleClientId = process.env.GOOGLE_CLIENT_ID;
 const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET;
 
@@ -50,8 +52,8 @@ export const auth = betterAuth({
   },
   socialProviders: {
     google: {
-      // These are only read when the module is actually used; in a production
-      // boot without credentials validateRuntimeEnv() has already thrown.
+      // Unreachable in production: validateRuntimeEnv() has already thrown
+      // for a missing credential before this module is used to serve traffic.
       clientId: googleClientId ?? "test-client",
       clientSecret: googleClientSecret ?? "test-secret",
       requireEmailVerification: true,
