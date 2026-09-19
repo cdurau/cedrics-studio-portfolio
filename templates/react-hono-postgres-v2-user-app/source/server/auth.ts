@@ -6,6 +6,16 @@ import * as authSchema from "./db/schema.js";
 import { hash, verify } from "@node-rs/argon2";
 import { trustedProxiesFromEnv } from "./env.js";
 
+// No placeholder OAuth fallbacks (claude review 2026-09-19, MEDIUM-2): the
+// previous `|| "test-client"` fallbacks meant a NODE_ENV mishap started the
+// app silently with publicly known credentials and no proxy list. Missing
+// Google credentials now fail the boot via validateRuntimeEnv (env.ts,
+// production-like hardened) — they are required there. Dev/test without
+// credentials can still import the module for static contract checks; the
+// Google provider is simply never exercised in such runs.
+const googleClientId = process.env.GOOGLE_CLIENT_ID;
+const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET;
+
 // Argon2id parameters (RFC 9106 recommended profile).
 // Format: $argon2id$v=19$m=19456,t=2,p=1$<salt>$<hash> — Appwrite-import
 // compatible (Appwrite uses the same PHC string format).
@@ -40,8 +50,10 @@ export const auth = betterAuth({
   },
   socialProviders: {
     google: {
-      clientId: process.env.GOOGLE_CLIENT_ID || "test-client",
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET || "test-secret",
+      // These are only read when the module is actually used; in a production
+      // boot without credentials validateRuntimeEnv() has already thrown.
+      clientId: googleClientId ?? "test-client",
+      clientSecret: googleClientSecret ?? "test-secret",
       requireEmailVerification: true,
       // Google is a trusted provider, but implicit linking is globally disabled;
       // linking happens only via explicit /link-social from an existing session.

@@ -1,4 +1,4 @@
-# Phase 10 Profile — react-hono-postgres
+# Phase 10 Profile — react-hono-postgres-v2-user-app (S0 Better-Auth baseline)
 FROM node:22-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json ./

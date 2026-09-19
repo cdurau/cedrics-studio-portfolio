@@ -321,7 +321,7 @@ describe("user-app Auth Contract (CONTRACTS-v2 mandatory tests)", () => {
     expect((await fetch(`${baseUrl}/readyz`)).status).toBe(200);
   });
 
-  it("8) rate limit enforced (429) with DB storage", async () => {
+  it("8) rate limit enforced (429) with DB storage — survives server restart", async () => {
     const fixedIp = "10.99.0.1";
     let last = 0;
     for (let i = 0; i < 15; i++) {
@@ -334,6 +334,20 @@ describe("user-app Auth Contract (CONTRACTS-v2 mandatory tests)", () => {
       if (last === 429) break;
     }
     expect(last).toBe(429);
+
+    // DB storage property (claude review 2026-09-19, MEDIUM-6): with in-memory
+    // storage a restart would reset the counter and the next attempt would be
+    // a fresh 401. With database storage the counter persists and the same IP
+    // stays throttled (429) across the restart.
+    await stopServer();
+    serverProcess = startServer();
+    await waitForHealth();
+    const res = await fetch(`${baseUrl}/api/auth/sign-in/email`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-forwarded-for": fixedIp },
+      body: JSON.stringify({ email: "u1@test.com", password: "wrong-password-123" }),
+    });
+    expect(res.status).toBe(429);
   });
 
   it("9) logout invalidates the session", async () => {

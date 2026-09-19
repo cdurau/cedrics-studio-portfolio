@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-set -e
+# LOW-6 review hygiene: fail on unset vars and pipe failures — an empty
+# HOST_PORT would otherwise flow into broken connection strings instead of
+# aborting. Test containers are ephemeral here; productive Docker operations
+# use `docker --context devbox` (AGENTS.md) — this script never touches prod.
+set -eu -o pipefail
 
 # Ephemeral Postgres + two-role bootstrap for user-app contract tests.
 # The app runs with the RUNTIME role (RLS applies); migrations with OWNER.

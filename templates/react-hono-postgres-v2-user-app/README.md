@@ -26,7 +26,7 @@ Studio user-app profile implementing the `user-app` auth contract from `template
 ## Admin CLI (container/mini only)
 
 - `npm run admin:seed-user` — creates a verified user; password via hidden stdin prompt only.
-- `npm run admin:reset-password` — resets a credential password.
+- `npm run admin:reset-password` — resets a credential password (does **not** end existing sessions — for a compromised password also run `admin:revoke-sessions` afterwards).
 - `npm run admin:revoke-sessions <email>` — incident revoke: deletes all server-side sessions.
 
 ## Tests
@@ -39,4 +39,4 @@ Studio user-app profile implementing the `user-app` auth contract from `template
 - Coolify runtime env: `DATABASE_URL` (runtime role), `MIGRATION_DATABASE_URL` (owner role), `BETTER_AUTH_SECRETS`, `BETTER_AUTH_URL`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `BETTER_AUTH_TRUSTED_PROXIES` (mandatory in production: comma-separated Traefik CIDR/IP list; without it the IP rate limiter collapses into the global `no-trusted-ip` bucket). Nothing as build arg; `inject_build_args_to_dockerfile=false`.
 - Bootstrap before first boot: create both DB roles (passwords from owner-only secrets file), then migrations run automatically at container start (owner role).
 - `app.yaml`: `class: user-app`, `auth.method: better-auth`, `forward_auth: false`.
-- Auth code is protected: `source/server/auth/**`, `source/client/auth/**` (see `CODEOWNERS`).
+- Auth code is protected: `source/server/auth.ts`, `source/client/auth.ts` (see root `CODEOWNERS`).

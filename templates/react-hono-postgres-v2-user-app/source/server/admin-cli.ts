@@ -64,8 +64,13 @@ async function main() {
       process.exit(1);
     }
   } finally {
+    // No process.exit here (claude review 2026-09-19, HIGH-2): exit(0) in the
+    // finally block terminated the process BEFORE a thrown admin error reached
+    // the .catch handler — failures printed nothing and exited 0, which marked
+    // failed incident revocations as successful. Closing the readline
+    // interface only lets Node exit 0 naturally on the success path; the
+    // .catch handler below exits 1 with the error message on failure.
     rl.close();
-    process.exit(0);
   }
 }
 

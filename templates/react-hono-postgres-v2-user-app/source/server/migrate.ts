@@ -142,7 +142,16 @@ export async function runMigrations(
 // (MIGRATION_DATABASE_URL), never the server's runtime pool (client.ts).
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   const { Pool } = await import("pg");
-  const migrationUrl = process.env.MIGRATION_DATABASE_URL || process.env.DATABASE_URL;
+  // MIGRATION_DATABASE_URL is mandatory (claude review 2026-09-19, MEDIUM-5):
+  // the previous `|| process.env.DATABASE_URL` fallback silently ran
+  // migrations with the runtime role when the owner-role URL was missing
+  // from the Coolify env — the exact reverse of the role split db/client.ts
+  // forbids. Fail closed instead.
+  const migrationUrl = process.env.MIGRATION_DATABASE_URL;
+  if (!migrationUrl) {
+    console.error("Migration failed: MIGRATION_DATABASE_URL is required (owner/migration role; never fall back to the runtime DATABASE_URL)");
+    process.exit(1);
+  }
   const migrationPool = new Pool({ connectionString: migrationUrl });
   const migrationsDir = join(process.cwd(), "drizzle", "migrations");
   console.log(`Running migrations from ${migrationsDir}`);

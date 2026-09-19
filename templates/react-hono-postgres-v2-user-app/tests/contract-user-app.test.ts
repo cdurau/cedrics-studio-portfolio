@@ -72,8 +72,12 @@ describe("user-app auth contract (static)", () => {
 
   it("env validation: BETTER_AUTH_SECRETS rejects malformed/duplicate/empty entries", async () => {
     const { validateRuntimeEnv } = await import("../source/server/env.js");
+    // ≥32 chars, non-placeholder: satisfies the strength rules so the
+    // assertions below test the intended failure modes, not secret strength.
+    const LONG_A = "contract-secret-a-0123456789abcdef0123456789abcdef";
+    const LONG_B = "contract-secret-b-0123456789abcdef0123456789abcdef";
     const base = {
-      BETTER_AUTH_SECRETS: "1:secret-a",
+      BETTER_AUTH_SECRETS: `1:${LONG_A}`,
       BETTER_AUTH_URL: "https://x",
       DATABASE_URL: "postgresql://x",
     } as Record<string, string>;
@@ -81,30 +85,36 @@ describe("user-app auth contract (static)", () => {
       const saved = { ...process.env };
       try {
         Object.assign(process.env, base, env);
-        delete process.env.NODE_ENV;
+        // simulate non-production (LOW-6: restore ALL touched keys — base
+        // values must not leak into following tests)
         process.env.NODE_ENV = "test";
-        delete process.env.NODE_ENV;
-        // simulate non-production
-        process.env.NODE_ENV = "test";
+        process.env.TEST_OIDC_ISSUER = "";
+        delete process.env.TEST_OIDC_ISSUER;
         validateRuntimeEnv();
         return "ok";
       } catch {
         return "rejected";
       } finally {
-        for (const k of Object.keys(env)) delete process.env[k];
         Object.assign(process.env, saved);
       }
     };
     expect(run({})).toBe("ok");
     expect(run({ BETTER_AUTH_SECRETS: "" })).toBe("rejected");
     // leading zeros: "01" collides numerically with "1" → rejected (round 3)
-    expect(run({ BETTER_AUTH_SECRETS: "1:secret-a,01:secret-b" })).toBe("rejected");
+    expect(run({ BETTER_AUTH_SECRETS: `1:${LONG_A},01:${LONG_B}` })).toBe("rejected");
     // duplicate version → rejected
-    expect(run({ BETTER_AUTH_SECRETS: "1:secret-a,1:secret-b" })).toBe("rejected");
+    expect(run({ BETTER_AUTH_SECRETS: `1:${LONG_A},1:${LONG_B}` })).toBe("rejected");
     // empty CSV entry → rejected (no silent filtering)
-    expect(run({ BETTER_AUTH_SECRETS: "1:secret-a," })).toBe("rejected");
+    expect(run({ BETTER_AUTH_SECRETS: `1:${LONG_A},` })).toBe("rejected");
     // non-numeric version → rejected
-    expect(run({ BETTER_AUTH_SECRETS: "one:secret-a" })).toBe("rejected");
+    expect(run({ BETTER_AUTH_SECRETS: `one:${LONG_A}` })).toBe("rejected");
+    // secret strength (claude review 2026-09-19, MEDIUM-1): too short → rejected
+    expect(run({ BETTER_AUTH_SECRETS: "1:short" })).toBe("rejected");
+    // placeholder values (public in the repo) → rejected even at length
+    expect(run({ BETTER_AUTH_SECRETS: "1:replace-with-generated-secret-aaaaaaaaaaaaaaaaaaaaaa" })).toBe("rejected");
+    expect(run({ BETTER_AUTH_SECRETS: "1:changeme-secret-aaaaaaaaaaaaaaaaaaaaaaaaaaaaa" })).toBe("rejected");
+    // a 32+ char non-placeholder value passes
+    expect(run({ BETTER_AUTH_SECRETS: "1:" + "x".repeat(32) })).toBe("ok");
   });
 
   it("env validation: trustedProxies parsing fails closed on empty/invalid entries", async () => {
@@ -138,7 +148,7 @@ describe("user-app auth contract (static)", () => {
     const { validateRuntimeEnv } = await import("../source/server/env.js");
     const base = {
       NODE_ENV: "production",
-      BETTER_AUTH_SECRETS: "1:secret-a",
+      BETTER_AUTH_SECRETS: "1:contract-secret-a-0123456789abcdef0123456789abcdef",
       BETTER_AUTH_URL: "https://x",
       DATABASE_URL: "postgresql://x",
       GOOGLE_CLIENT_ID: "id",
@@ -164,5 +174,60 @@ describe("user-app auth contract (static)", () => {
     expect(run(",,,")).toBe("rejected");
     expect(run("not-a-cidr")).toBe("rejected");
     expect(run("100.64.0.0/10")).toBe("ok");
+  });
+
+  it("env validation: production-like NODE_ENV spellings are all hardened (MEDIUM-2)", async () => {
+    const { validateRuntimeEnv } = await import("../source/server/env.js");
+    // Missing Google creds must be rejected for EVERY production-like NODE_ENV
+    // value — including NODE_ENV unset (fail closed, not fail open).
+    for (const nodeEnv of ["production", "Production", "prod", "PROD", undefined]) {
+      const saved = { ...process.env };
+      try {
+        if (nodeEnv === undefined) delete process.env.NODE_ENV;
+        else process.env.NODE_ENV = nodeEnv;
+        process.env.BETTER_AUTH_SECRETS = "1:" + "x".repeat(32);
+        process.env.BETTER_AUTH_URL = "https://x";
+        process.env.DATABASE_URL = "postgresql://x";
+        delete process.env.GOOGLE_CLIENT_ID;
+        delete process.env.GOOGLE_CLIENT_SECRET;
+        delete process.env.BETTER_AUTH_TRUSTED_PROXIES;
+        expect(() => validateRuntimeEnv()).toThrow();
+      } finally {
+        Object.assign(process.env, saved);
+      }
+    }
+    // explicit development/test without credentials is allowed
+    for (const nodeEnv of ["development", "test"]) {
+      const saved = { ...process.env };
+      try {
+        process.env.NODE_ENV = nodeEnv;
+        process.env.BETTER_AUTH_SECRETS = "1:" + "x".repeat(32);
+        process.env.BETTER_AUTH_URL = "https://x";
+        process.env.DATABASE_URL = "postgresql://x";
+        validateRuntimeEnv(); // must not throw
+      } finally {
+        Object.assign(process.env, saved);
+      }
+    }
+  });
+
+  it("env validation: TEST_OIDC_ISSUER is rejected in production-like boots (MEDIUM-3)", async () => {
+    const { validateRuntimeEnv } = await import("../source/server/env.js");
+    const saved = { ...process.env };
+    try {
+      process.env.NODE_ENV = "production";
+      process.env.BETTER_AUTH_SECRETS = "1:" + "x".repeat(32);
+      process.env.BETTER_AUTH_URL = "https://x";
+      process.env.DATABASE_URL = "postgresql://x";
+      process.env.GOOGLE_CLIENT_ID = "id";
+      process.env.GOOGLE_CLIENT_SECRET = "secret";
+      process.env.BETTER_AUTH_TRUSTED_PROXIES = "100.64.0.0/10";
+      process.env.TEST_OIDC_ISSUER = "http://boese.example";
+      expect(() => validateRuntimeEnv()).toThrow(/TEST_OIDC_ISSUER/);
+      delete process.env.TEST_OIDC_ISSUER;
+      expect(() => validateRuntimeEnv()).not.toThrow();
+    } finally {
+      Object.assign(process.env, saved);
+    }
   });
 });
