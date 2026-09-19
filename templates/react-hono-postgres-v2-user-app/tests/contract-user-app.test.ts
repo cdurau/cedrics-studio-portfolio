@@ -69,4 +69,89 @@ describe("user-app auth contract (static)", () => {
     expect(sql).toContain("FORCE ROW LEVEL SECURITY");
     expect(sql).toContain("app_runtime");
   });
+
+  it("env validation: BETTER_AUTH_SECRETS rejects malformed/duplicate/empty entries", async () => {
+    const { validateRuntimeEnv } = await import("../source/server/env.js");
+    const base = {
+      BETTER_AUTH_SECRETS: "1:secret-a",
+      BETTER_AUTH_URL: "https://x",
+      DATABASE_URL: "postgresql://x",
+    } as Record<string, string>;
+    const run = (env: Record<string, string>) => {
+      const saved = { ...process.env };
+      try {
+        Object.assign(process.env, base, env);
+        delete process.env.NODE_ENV;
+        process.env.NODE_ENV = "test";
+        delete process.env.NODE_ENV;
+        // simulate non-production
+        process.env.NODE_ENV = "test";
+        validateRuntimeEnv();
+        return "ok";
+      } catch {
+        return "rejected";
+      } finally {
+        for (const k of Object.keys(env)) delete process.env[k];
+        Object.assign(process.env, saved);
+      }
+    };
+    expect(run({})).toBe("ok");
+    expect(run({ BETTER_AUTH_SECRETS: "" })).toBe("rejected");
+    // leading zeros: "01" collides numerically with "1" → rejected (round 3)
+    expect(run({ BETTER_AUTH_SECRETS: "1:secret-a,01:secret-b" })).toBe("rejected");
+    // duplicate version → rejected
+    expect(run({ BETTER_AUTH_SECRETS: "1:secret-a,1:secret-b" })).toBe("rejected");
+    // empty CSV entry → rejected (no silent filtering)
+    expect(run({ BETTER_AUTH_SECRETS: "1:secret-a," })).toBe("rejected");
+    // non-numeric version → rejected
+    expect(run({ BETTER_AUTH_SECRETS: "one:secret-a" })).toBe("rejected");
+  });
+
+  it("env validation: trustedProxies parsing fails closed on empty/invalid entries", async () => {
+    const { parseTrustedProxies } = await import("../source/server/env.js");
+    expect(parseTrustedProxies(undefined)).toBeUndefined();
+    expect(parseTrustedProxies("100.64.0.0/10")).toEqual(["100.64.0.0/10"]);
+    expect(parseTrustedProxies("100.64.0.0/10, 172.18.0.0/16")).toHaveLength(2);
+    // whitespace-only / delimiter-only → rejected, never undefined (round 3)
+    expect(() => parseTrustedProxies("   ")).toThrow();
+    expect(() => parseTrustedProxies(",,,")).toThrow();
+    expect(() => parseTrustedProxies("not-a-cidr")).toThrow();
+    // trailing comma → rejected (empty entry)
+    expect(() => parseTrustedProxies("100.64.0.0/10,")).toThrow();
+    // prefix bounds
+    expect(() => parseTrustedProxies("100.64.0.0/33")).toThrow();
+    expect(() => parseTrustedProxies("10.0.0.0/32")).not.toThrow();
+  });
+
+  it("env validation: production requires validated non-empty trustedProxies", async () => {
+    const { validateRuntimeEnv } = await import("../source/server/env.js");
+    const base = {
+      NODE_ENV: "production",
+      BETTER_AUTH_SECRETS: "1:secret-a",
+      BETTER_AUTH_URL: "https://x",
+      DATABASE_URL: "postgresql://x",
+      GOOGLE_CLIENT_ID: "id",
+      GOOGLE_CLIENT_SECRET: "secret",
+    } as Record<string, string>;
+    const run = (proxies: string | undefined) => {
+      const saved = { ...process.env };
+      try {
+        Object.assign(process.env, base);
+        if (proxies === undefined) delete process.env.BETTER_AUTH_TRUSTED_PROXIES;
+        else process.env.BETTER_AUTH_TRUSTED_PROXIES = proxies;
+        validateRuntimeEnv();
+        return "ok";
+      } catch {
+        return "rejected";
+      } finally {
+        delete process.env.BETTER_AUTH_TRUSTED_PROXIES;
+        Object.assign(process.env, saved);
+      }
+    };
+    expect(run(undefined)).toBe("rejected");
+    expect(run("   ")).toBe("rejected");
+    expect(run(",,,")).toBe("rejected");
+    expect(run("not-a-cidr")).toBe("rejected");
+    expect(run("100.64.0.0/10")).toBe("ok");
+  });
 });

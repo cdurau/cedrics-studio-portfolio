@@ -1,36 +1,86 @@
 // Fail-closed boot validation for runtime secrets (Terra-Review 2026-09-19, M1;
-// hardened in re-review round 2: numeric unique versions, mandatory prod proxies).
-// better-auth 1.7.5 silently falls back to its built-in default secret when
-// BETTER_AUTH_SECRETS is missing (create-context.mjs:70-81); we refuse to boot
-// instead. Called from server.ts and admin-cli.ts before any listening/IO.
+// hardened in re-review rounds 2+3: numeric unique canonical versions, mandatory
+// validated prod proxies). better-auth 1.7.5 silently falls back to its built-in
+// default secret when BETTER_AUTH_SECRETS is missing (create-context.mjs:70-81);
+// we refuse to boot instead. Called from server.ts and admin-cli.ts before any
+// listening/IO.
+
+// Parse and validate a BETTER_AUTH_TRUSTED_PROXIES value. Absent env → undefined.
+// Present-but-invalid (empty/delimiter-only entries, bad CIDR/IP) → throw.
+export function parseTrustedProxies(raw: string | undefined): string[] | undefined {
+  if (raw === undefined) return undefined;
+  const entries = raw.split(",").map((s) => s.trim());
+  // Reject empty/delimiter-only entries explicitly — no silent filtering
+  // (re-review round 3: ",,," or "   " must fail closed, not yield undefined).
+  if (entries.some((e) => e === "")) {
+    throw new Error("BETTER_AUTH_TRUSTED_PROXIES contains empty entries (check for stray commas or whitespace-only values)");
+  }
+  for (const entry of entries) {
+    if (!isValidIpOrCidr(entry)) {
+      throw new Error(`BETTER_AUTH_TRUSTED_PROXIES contains an invalid IP/CIDR entry (entries are never echoed)`);
+    }
+  }
+  return entries;
+}
+
+// IPv4: four strict octets, optional /0-32. IPv6: sane hex/colon/dot form,
+// optional /0-128. Better Auth parses via its own CIDR parser; this boot check
+// rejects clearly invalid entries before they are silently ignored.
+function isValidIpOrCidr(entry: string): boolean {
+  const slash = entry.indexOf("/");
+  const addr = slash === -1 ? entry : entry.slice(0, slash);
+  const prefix = slash === -1 ? undefined : entry.slice(slash + 1);
+
+  if (prefix !== undefined) {
+    if (!/^\d+$/.test(prefix)) return false;
+    const bits = Number(prefix);
+    const max = addr.includes(":") ? 128 : 32;
+    if (!Number.isInteger(bits) || bits < 0 || bits > max) return false;
+  }
+
+  if (addr.includes(":")) {
+    // IPv6 (loose shape: hex groups/`::`, embedded v4 dots allowed).
+    return addr.includes(":") && /^[0-9a-fA-F:.]+$/.test(addr) && addr.length <= 45;
+  }
+  const octets = addr.split(".");
+  if (octets.length !== 4) return false;
+  return octets.every((o) => /^\d{1,3}$/.test(o) && Number(o) <= 255);
+}
+
+// Comma-separated CIDR/IP list for advanced.ipAddress.trustedProxies
+// (Terra-Review 2026-09-19, M2: multi-hop X-Forwarded-For behind Traefik).
+export function trustedProxiesFromEnv(): string[] | undefined {
+  return parseTrustedProxies(process.env.BETTER_AUTH_TRUSTED_PROXIES);
+}
 
 export function validateRuntimeEnv(): void {
   const problems: string[] = [];
 
   const secrets = process.env.BETTER_AUTH_SECRETS;
   if (!secrets || !secrets.trim()) {
-    problems.push("BETTER_AUTH_SECRETS is required (format: '<version>:<secret>[,<version>:<secret>...], versions numeric and unique, first = current)");
+    problems.push("BETTER_AUTH_SECRETS is required (format: '<version>:<secret>[,<version>:<secret>...], canonical numeric versions, unique, first = current)");
   } else {
-    const entries = secrets.split(",").map((s) => s.trim()).filter(Boolean);
-    const versions: string[] = [];
-    for (const entry of entries) {
-      // Better Auth requires numeric, unique versions; reject anything else
-      // at boot instead of failing later inside the auth stack (re-review LOW).
-      const match = /^(\d+):(.+)$/.exec(entry);
-      if (!match || !match[2].trim()) {
-        problems.push(`BETTER_AUTH_SECRETS entry must match '<numeric-version>:<secret>': found malformed entry`);
-        break;
+    const entries = secrets.split(",");
+    // Round 3: no silent filtering — empty entries fail closed.
+    if (entries.some((e) => e.trim() === "")) {
+      problems.push("BETTER_AUTH_SECRETS contains empty entries (check for stray commas)");
+    } else {
+      const seenVersions = new Set<string>();
+      for (const entry of entries) {
+        const match = /^(\d+):(.+)$/.exec(entry.trim());
+        // Canonical decimal notation: "01" and "1" are the same version in
+        // better-auth's numeric parsing — leading zeros are rejected so a
+        // textual-uniqueness check cannot miss a numeric duplicate.
+        if (!match || !/^(?:0|[1-9]\d*)$/.test(match[1])) {
+          problems.push("BETTER_AUTH_SECRETS entry must match '<canonical-numeric-version>:<secret>' (no leading zeros)");
+          break;
+        }
+        if (seenVersions.has(match[1])) {
+          problems.push("BETTER_AUTH_SECRETS versions must be unique (duplicates found)");
+          break;
+        }
+        seenVersions.add(match[1]);
       }
-      versions.push(match[1]);
-    }
-    if (versions.length > 0) {
-      const dupes = versions.filter((v, i) => versions.indexOf(v) !== i);
-      if (dupes.length > 0) {
-        problems.push("BETTER_AUTH_SECRETS versions must be unique (duplicates found)");
-      }
-    }
-    if (entries.length === 0) {
-      problems.push("BETTER_AUTH_SECRETS must contain at least one '<version>:<secret>' entry");
     }
   }
 
@@ -46,13 +96,23 @@ export function validateRuntimeEnv(): void {
     if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
       problems.push("GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are required in production");
     }
-    // Terra re-review 2026-09-19 (M2 round 2): every production user-app
-    // deploys behind Traefik (multi-hop X-Forwarded-For). Without
-    // trustedProxies the rate limiter collapses into the global
-    // "no-trusted-ip" bucket — so the proxy CIDR list is MANDATORY here,
-    // not optional. Dev/test runs (direct localhost) may omit it.
-    if (!process.env.BETTER_AUTH_TRUSTED_PROXIES) {
+    // Terra re-review 2026-09-19 (M2, rounds 2+3): every production user-app
+    // deploys behind Traefik (multi-hop X-Forwarded-For). The proxy CIDR list
+    // is MANDATORY and must be present, non-empty and valid — the parsed
+    // result is checked, not the raw string's truthiness. Dev/test runs
+    // (direct localhost, NODE_ENV unset) may omit it.
+    const rawProxies = process.env.BETTER_AUTH_TRUSTED_PROXIES;
+    if (rawProxies === undefined) {
       problems.push("BETTER_AUTH_TRUSTED_PROXIES is required in production (comma-separated Traefik CIDR/IP list)");
+    } else {
+      try {
+        const parsed = parseTrustedProxies(rawProxies);
+        if (!parsed || parsed.length === 0) {
+          problems.push("BETTER_AUTH_TRUSTED_PROXIES must contain at least one valid CIDR/IP entry in production");
+        }
+      } catch (err) {
+        problems.push(err instanceof Error ? err.message : "BETTER_AUTH_TRUSTED_PROXIES is invalid");
+      }
     }
   }
 
@@ -60,13 +120,4 @@ export function validateRuntimeEnv(): void {
     // No secret values are ever echoed — names only.
     throw new Error(`runtime env validation failed:\n  - ${problems.join("\n  - ")}`);
   }
-}
-
-// Comma-separated CIDR/IP list for advanced.ipAddress.trustedProxies
-// (Terra-Review 2026-09-19, M2: multi-hop X-Forwarded-For behind Traefik).
-export function trustedProxiesFromEnv(): string[] | undefined {
-  const raw = process.env.BETTER_AUTH_TRUSTED_PROXIES;
-  if (!raw || !raw.trim()) return undefined;
-  const entries = raw.split(",").map((s) => s.trim()).filter(Boolean);
-  return entries.length > 0 ? entries : undefined;
 }
