@@ -14,6 +14,7 @@ Studio user-app profile implementing the `user-app` auth contract from `template
 - **Session security:** host-only cookies, `Secure`, `HttpOnly`, `SameSite=Lax` (`advanced.defaultCookieAttributes`), prefix `user-app`. **Cookie cache off** — incident revocation is immediate.
 - **Rate limiting:** DB storage (survives Blue/Green redeploy), enabled, stricter rules on sign-in/link endpoints. Rule keys are basePath-normalized (no `/api/auth` prefix).
 - **Health:** `/healthz` (liveness, no DB), `/readyz` (readiness, DB) — outside the auth gate.
+- **Authorization policy:** [`AUTHORIZATION.md`](./AUTHORIZATION.md) — subjects, routes, per-table rules, the two enforcement layers, known deviations and the Appwrite mapping (required by CONTRACTS-v2 § *Data isolation*).
 
 ## Rotation (verified against better-auth 1.7.5, decision 2026-09-19)
 
