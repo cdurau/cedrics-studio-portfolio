@@ -140,6 +140,9 @@ export async function runMigrations(
 
 // Run directly if this script is executed — use the OWNER/migration role
 // (MIGRATION_DATABASE_URL), never the server's runtime pool (client.ts).
+// M5 (Gesamtreview 2026-09-20): when run as a separate deploy step (the server
+// CMD no longer chains migrate.js), transient DB unavailability must not fail
+// the deploy outright — bounded retry with backoff, then fail closed.
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   const { Pool } = await import("pg");
   // MIGRATION_DATABASE_URL is mandatory (claude review 2026-09-19, MEDIUM-5):
@@ -154,16 +157,36 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   }
   const migrationPool = new Pool({ connectionString: migrationUrl });
   const migrationsDir = join(process.cwd(), "drizzle", "migrations");
-  console.log(`Running migrations from ${migrationsDir}`);
-  runMigrations(migrationPool, migrationsDir)
-    .then(async (res) => {
+  // Bounded retry for transient DB unavailability (S0-7): 5 attempts,
+  // 2s * attempt backoff. Connection/terminations errors retry; SQL logic
+  // errors still fail immediately (retrying them only masks real breakage).
+  const MAX_ATTEMPTS = 5;
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      console.log(`Running migrations from ${migrationsDir} (attempt ${attempt}/${MAX_ATTEMPTS})`);
+      const res = await runMigrations(migrationPool, migrationsDir);
       console.log("Migration complete", res);
       await migrationPool.end();
       process.exit(0);
-    })
-    .catch(async (err) => {
-      console.error("Migration failed", err);
-      await migrationPool.end();
-      process.exit(1);
-    });
+    } catch (err: any) {
+      lastError = err;
+      const transient =
+        err?.code === "ECONNREFUSED" ||
+        err?.code === "ETIMEDOUT" ||
+        err?.code === "ECONNRESET" ||
+        err?.code === "ENOTFOUND" ||
+        err?.code === "57P01" || // admin_shutdown / terminated backend
+        err?.code === "53300" || // too_many_connections
+        err?.code === "08006" || // connection_failure
+        /terminat|server closed|connection/i.test(String(err?.message ?? ""));
+      if (!transient || attempt === MAX_ATTEMPTS) break;
+      const delay = 2000 * attempt;
+      console.error(`Transient migration failure (attempt ${attempt}), retrying in ${delay}ms:`, String(err?.code ?? ""), String(err?.message ?? err));
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+  console.error("Migration failed", lastError);
+  await migrationPool.end();
+  process.exit(1);
 }

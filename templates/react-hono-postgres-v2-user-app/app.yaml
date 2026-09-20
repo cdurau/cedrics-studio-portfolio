@@ -1,7 +1,20 @@
-class: user-app
+# user-app profile manifest — Studio App Contract v2 (S0-13 smoke: ua-smoke)
+# Better-Auth in-app auth (forward_auth: false): no Authentik ForwardAuth,
+# no scrub/injector middleware on this origin (deliberate exception, see
+# coolify-app-provisioning skill + CONTRACTS-v2 user-app auth contract).
+schema: 1
+slug: ua-smoke
+profile: react-hono-postgres-v2-user-app
+routing:
+  mode: service
+  # Contract invariant: origin MUST be <slug>.exampletailnet.ts.net.
+  origin: ua-smoke.exampletailnet.ts.net
+  base_path: /
+database:
+  type: postgres
 auth:
   method: better-auth
-forward_auth: false
+  forward_auth: false
 health:
   liveness: /healthz
   readiness: /readyz
