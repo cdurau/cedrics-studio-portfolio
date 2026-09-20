@@ -333,6 +333,14 @@ describe("user-app Auth Contract (CONTRACTS-v2 mandatory tests)", () => {
       await rt.query(`SELECT set_config('app.user_id', $1, true)`, [aId]);
       expect((await rt.query(`SELECT * FROM entries`)).rowCount).toBe(1);
       await rt.query(`COMMIT`);
+
+      // Migration 0004 regression (gate review IN-02): after that COMMIT the
+      // transaction-local setting resets to '' — NOT to NULL — on this very
+      // connection. The pre-0004 policy cast '' to uuid and raised
+      // "invalid input syntax for type uuid" (a 500 instead of an empty
+      // result). NULLIF must turn it back into a fail-closed 0-row read.
+      expect((await rt.query(`SELECT current_setting('app.user_id', true)`)).rows[0].current_setting).toBe("");
+      expect((await rt.query(`SELECT * FROM entries`)).rowCount).toBe(0);
     } finally {
       await rt.end();
     }

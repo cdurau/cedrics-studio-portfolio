@@ -7,27 +7,103 @@ import { join } from "node:path";
 // Behavioral parts live in tests/integration.test.ts against ephemeral Postgres.
 
 describe("user-app auth contract (static)", () => {
-  it("manifest is a neutral user-app template with derived origin", () => {
+  it("manifest satisfies the App Manifest Contract", () => {
     const manifest = readFileSync(new URL("../app.yaml", import.meta.url), "utf8");
     const field = (name: string) => {
-      const match = manifest.match(new RegExp(`^\\s*${name}:\\s*[\"']?([^\"'\\s#]+)[\"']?\\s*$`, "m"));
+      const match = manifest.match(new RegExp(`^\\s*${name}:\\s*["']?([^"'\\s#]+)["']?\\s*$`, "m"));
       return match?.[1];
     };
 
+    // CONTRACTS-v2 § App Manifest Contract: mandatory keys and accepted values.
+    expect(field("schema")).toBe("1");
     expect(field("class")).toBe("user-app");
-    expect(field("slug")).toBe("__APP_SLUG__");
-    expect(field("origin")).toBe("__APP_SLUG__.exampletailnet.ts.net");
-    expect(manifest).not.toContain("ua-smoke");
+    expect(field("profile")).toBe("react-hono-postgres-v2-user-app");
+    expect(field("mode")).toBe("service");
+    expect(field("base_path")).toBe("/");
+    expect(field("method")).toBe("better-auth");
+    expect(field("forward_auth")).toBe("false");
+    expect(field("liveness")).toBe("/healthz");
+    expect(field("readiness")).toBe("/readyz");
 
-    // This is the exact bounded substitution a generator must perform.
-    const generatedSlug = "example-user-app";
-    expect(generatedSlug).toMatch(/^[a-z0-9][a-z0-9-]*$/);
-    const generated = manifest.replaceAll("__APP_SLUG__", generatedSlug);
-    const generatedSlugValue = generated.match(/^\s*slug:\s*[\"']?([^\"'\s#]+)[\"']?\s*$/m)?.[1];
-    const generatedOrigin = generated.match(/^\s*origin:\s*[\"']?([^\"'\s#]+)[\"']?\s*$/m)?.[1];
-    expect(generatedSlugValue).toBe(generatedSlug);
-    expect(generatedOrigin).toBe(`${generatedSlug}.exampletailnet.ts.net`);
-    expect(generated).not.toContain("__APP_SLUG__");
+    const slug = field("slug");
+    const origin = field("origin");
+    // The origin is DERIVED, never chosen — this holds for the template and
+    // for a generated app alike, which is the point of asserting it here.
+    expect(origin).toBe(`${slug}.exampletailnet.ts.net`);
+
+    if (slug === "__APP_SLUG__") {
+      // Template identity rule (WR-04): commit 6a21c62 had baked a real app's
+      // slug and origin into the reusable profile, so every app generated from
+      // it would have inherited a foreign identity until someone noticed.
+      expect(manifest).not.toContain("ua-smoke");
+
+      // This is the exact bounded substitution a generator must perform.
+      const generatedSlug = "example-user-app";
+      expect(generatedSlug).toMatch(/^[a-z0-9][a-z0-9-]*$/);
+      const generated = manifest.replaceAll("__APP_SLUG__", generatedSlug);
+      expect(generated).toContain(`slug: "${generatedSlug}"`);
+      expect(generated).toContain(`${generatedSlug}.exampletailnet.ts.net`);
+      expect(generated).not.toContain("__APP_SLUG__");
+    } else {
+      // A generated app carries concrete values — but still only a validated
+      // slug, and still nothing left unsubstituted.
+      expect(slug).toMatch(/^[a-z0-9][a-z0-9-]*$/);
+      expect(manifest).not.toContain("__APP_SLUG__");
+    }
+  });
+
+  // Gate review IN-03: the PWA shell was fixed only in the runtime smoke app,
+  // so every new app generated from this profile reproduced the 404s. The
+  // shell is part of the profile now, and this test is what keeps it there.
+  it("PWA shell is part of the profile and wired into the build", async () => {
+    const pub = (f: string) => new URL(`../source/client/public/${f}`, import.meta.url);
+    for (const f of ["manifest.webmanifest", "sw.js", "offline.html"]) {
+      expect(existsSync(pub(f)), `source/client/public/${f}`).toBe(true);
+    }
+
+    // Vite must copy the shell into dist/client — without publicDir the files
+    // exist in the repo and 404 at runtime, which is exactly the shipped bug.
+    const vite = readFileSync(new URL("../vite.config.ts", import.meta.url), "utf8");
+    expect(vite).toContain('publicDir: "source/client/public"');
+
+    const manifest = JSON.parse(readFileSync(pub("manifest.webmanifest"), "utf8"));
+    expect(manifest.start_url).toBe("/");
+    expect(manifest.scope).toBe("/");
+    expect(manifest.display).toBe("standalone");
+    expect(manifest.icons.map((i: { sizes: string }) => i.sizes).sort()).toEqual(["192x192", "512x512"]);
+    // Template identity rule (WR-04) applies to the client manifest too: the
+    // profile carries the placeholder, a generated app the substituted slug.
+    // Either way the app's own identity — never another app's — must be what
+    // the installed icon and the cache are named after.
+    const appYaml = readFileSync(new URL("../app.yaml", import.meta.url), "utf8");
+    const slug = appYaml.match(/^\s*slug:\s*["']?([^"'\s#]+)["']?\s*$/m)?.[1]!;
+    expect(manifest.name).toContain(slug);
+    expect(readFileSync(pub("sw.js"), "utf8")).toContain(`${slug}-v1`);
+
+    const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+    expect(html).toMatch(/<link[^>]+rel="manifest"[^>]+href="\/manifest\.webmanifest"/);
+    expect(html).toMatch(/<meta[^>]+name="theme-color"/);
+    expect(html).toMatch(/<link[^>]+rel="apple-touch-icon"/);
+    expect(html).toContain('navigator.serviceWorker.register("/sw.js"');
+
+    // Session state and readiness truth must never be served from a cache.
+    const sw = readFileSync(pub("sw.js"), "utf8");
+    for (const p of ["api", "healthz", "readyz"]) expect(sw).toContain(p);
+    expect(sw).toContain("offline.html");
+
+    // Every icon the manifest declares must actually exist and be a real PNG
+    // of the declared size — a manifest pointing at a missing or mis-sized
+    // icon fails installability at the first iPhone "Add to Home Screen", and
+    // that is exactly the class of bug this profile shipped before.
+    for (const icon of manifest.icons as { src: string; sizes: string }[]) {
+      const file = icon.src.replace(/^\//, "");
+      expect(existsSync(pub(file)), `declared icon ${icon.src}`).toBe(true);
+      const buf = readFileSync(pub(file));
+      const size = Number(icon.sizes.split("x")[0]);
+      expect(buf.subarray(1, 4).toString("ascii"), `${file} PNG signature`).toBe("PNG");
+      expect(buf.readUInt32BE(16), `${file} width`).toBe(size);
+      expect(buf.readUInt32BE(20), `${file} height`).toBe(size);
+    }
   });
 
   it("better-auth is pinned exactly to 1.7.5 (no range)", () => {
@@ -164,6 +240,9 @@ describe("user-app auth contract (static)", () => {
   it("env validation: trustedProxies parsing fails closed on empty/invalid entries", async () => {
     const { parseTrustedProxies } = await import("../source/server/env.js");
     expect(parseTrustedProxies(undefined)).toBeUndefined();
+    // parseTrustedProxies only validates FORM. 100.64.0.0/10 is well-formed
+    // and still refused by the production boot check (see WR-03 test below) —
+    // the two layers are deliberately separate.
     expect(parseTrustedProxies("100.64.0.0/10")).toEqual(["100.64.0.0/10"]);
     expect(parseTrustedProxies("100.64.0.0/10, 172.18.0.0/16")).toHaveLength(2);
     // whitespace-only / delimiter-only → rejected, never undefined (round 3)
@@ -217,7 +296,35 @@ describe("user-app auth contract (static)", () => {
     expect(run("   ")).toBe("rejected");
     expect(run(",,,")).toBe("rejected");
     expect(run("not-a-cidr")).toBe("rejected");
-    expect(run("100.64.0.0/10")).toBe("ok");
+    // Proxy hops between Tailscale and the container — the intended shape.
+    expect(run("127.0.0.1/32")).toBe("ok");
+    expect(run("127.0.0.1/32,172.18.0.0/16")).toBe("ok");
+    // Gate review 2026-09-20 (WR-03): a list covering the Tailscale client
+    // range must fail the boot. It used to be the SHIPPED example, it looked
+    // valid, and it silently collapsed every client into one rate-limit
+    // bucket — the review reproduced the lockout with two real devices.
+    expect(run("100.64.0.0/10")).toBe("rejected");
+    expect(run("127.0.0.1/32,100.64.0.0/10")).toBe("rejected");
+    expect(run("100.100.0.0/16")).toBe("rejected");
+    expect(run("0.0.0.0/0")).toBe("rejected");
+    expect(run("100.111.45.149")).toBe("rejected");
+  });
+
+  it("trusted proxies: client-space conflicts are detected without echoing entries (WR-03)", async () => {
+    const { trustedProxyClientSpaceConflicts } = await import("../source/server/env.js");
+    expect(trustedProxyClientSpaceConflicts(["127.0.0.1/32", "172.18.0.0/16"])).toEqual([]);
+    expect(trustedProxyClientSpaceConflicts(["10.0.0.0/8"])).toEqual([]);
+    expect(trustedProxyClientSpaceConflicts(["100.32.0.0/12"])).toEqual([]); // 100.32-100.47: outside CGNAT
+    // a supernet that CONTAINS the client range is just as wrong as the range itself
+    expect(trustedProxyClientSpaceConflicts(["100.0.0.0/8"])).toHaveLength(1);
+    expect(trustedProxyClientSpaceConflicts(["100.64.0.0/10"])).toHaveLength(1);
+    expect(trustedProxyClientSpaceConflicts(["100.127.255.255"])).toHaveLength(1);
+    expect(trustedProxyClientSpaceConflicts(["::ffff:100.64.0.1"])).toHaveLength(1);
+    // the message names the range and the consequence, never the entry itself
+    const [msg] = trustedProxyClientSpaceConflicts(["100.64.0.0/10", "172.18.0.0/16"]);
+    expect(msg).toContain("100.64.0.0/10");
+    expect(msg).toContain("rate-limit bucket");
+    expect(msg).not.toContain("172.18.0.0/16");
   });
 
   it("env validation: production-like NODE_ENV spellings are all hardened (MEDIUM-2)", async () => {
@@ -301,7 +408,7 @@ describe("user-app auth contract (static)", () => {
       process.env.DATABASE_URL = "postgresql://x";
       process.env.GOOGLE_CLIENT_ID = "id";
       process.env.GOOGLE_CLIENT_SECRET = "secret";
-      process.env.BETTER_AUTH_TRUSTED_PROXIES = "100.64.0.0/10";
+      process.env.BETTER_AUTH_TRUSTED_PROXIES = "127.0.0.1/32";
       process.env.TEST_OIDC_ISSUER = "http://boese.example";
       expect(() => validateRuntimeEnv()).toThrow(/TEST_OIDC_ISSUER/);
       delete process.env.TEST_OIDC_ISSUER;

@@ -52,6 +52,71 @@ function isValidIpOrCidr(entry: string): boolean {
   return true;
 }
 
+// --- Trusted proxies must not swallow the clients themselves ------------
+//
+// Gate review 2026-09-20 (WR-03). `getIPFromHeader` walks X-Forwarded-For from
+// the RIGHT and skips every hop that matches `trustedProxies`, returning the
+// first hop that does not. That is correct only as long as the list contains
+// proxies. If it also covers the address space the real clients live in, each
+// client's own entry is skipped as if it were infrastructure, the walk lands on
+// a hop that is identical for everybody, and every client shares one rate-limit
+// bucket — a lockout channel, not a per-client limit. The shipped example was
+// exactly that: `100.64.0.0/10` is the Tailscale CGNAT range, i.e. the range
+// every tailnet client (laptop, phone, mini) has an address in, not a proxy
+// range. The failure is silent: the bucket key looks like a real IP, so it does
+// not even show up as the `no-trusted-ip` fallback.
+//
+// The trusted list holds the hop(s) BETWEEN Tailscale and the app — the
+// Tailscale→Traefik hop and the Traefik→container hop — and nothing else.
+const CLIENT_ADDRESS_SPACES = [
+  { cidr: "100.64.0.0/10", label: "the Tailscale tailnet range (CGNAT) — real clients live here, not proxies" },
+] as const;
+
+function ipv4Bytes(addr: string): number[] | null {
+  const mapped = addr.toLowerCase().startsWith("::ffff:") ? addr.slice(7) : addr;
+  if (isIP(mapped) !== 4) return null;
+  return mapped.split(".").map(Number);
+}
+
+// True when the two IPv4 CIDRs share any address at all (either contains the
+// other). Non-IPv4 entries can never overlap the IPv4 client spaces above.
+function ipv4CidrsOverlap(a: string, b: string): boolean {
+  const split = (entry: string) => {
+    const slash = entry.lastIndexOf("/");
+    const bytes = ipv4Bytes(slash === -1 ? entry : entry.slice(0, slash));
+    const prefix = slash === -1 ? 32 : Number(entry.slice(slash + 1));
+    return bytes ? { bytes, prefix } : null;
+  };
+  const x = split(a);
+  const y = split(b);
+  if (!x || !y) return false;
+
+  const bits = Math.min(x.prefix, y.prefix);
+  for (let i = 0; i < 4; i++) {
+    const take = Math.min(8, Math.max(0, bits - i * 8));
+    if (take === 0) break;
+    const mask = (0xff << (8 - take)) & 0xff;
+    if ((x.bytes[i]! & mask) !== (y.bytes[i]! & mask)) return false;
+  }
+  return true;
+}
+
+// Entries that would strip real clients out of the forwarded chain. Returns the
+// human-readable reasons, never the entry values themselves.
+export function trustedProxyClientSpaceConflicts(entries: string[]): string[] {
+  const conflicts: string[] = [];
+  for (const space of CLIENT_ADDRESS_SPACES) {
+    if (entries.some((entry) => ipv4CidrsOverlap(entry, space.cidr))) {
+      conflicts.push(
+        `BETTER_AUTH_TRUSTED_PROXIES must not cover ${space.cidr} — ${space.label}. ` +
+          "Trusting it makes every client share one rate-limit bucket. " +
+          "List only the proxy hops between Tailscale and the container.",
+      );
+    }
+  }
+  return conflicts;
+}
+
 // Comma-separated CIDR/IP list for advanced.ipAddress.trustedProxies
 // (Terra-Review 2026-09-19, M2: multi-hop X-Forwarded-For behind Traefik).
 export function trustedProxiesFromEnv(): string[] | undefined {
@@ -153,6 +218,10 @@ export function validateRuntimeEnv(): void {
         const parsed = parseTrustedProxies(rawProxies);
         if (!parsed || parsed.length === 0) {
           problems.push("BETTER_AUTH_TRUSTED_PROXIES must contain at least one valid CIDR/IP entry in production");
+        } else {
+          // Gate review 2026-09-20 (WR-03): fail closed on a list that covers
+          // the clients themselves — see CLIENT_ADDRESS_SPACES above.
+          problems.push(...trustedProxyClientSpaceConflicts(parsed));
         }
       } catch (err) {
         problems.push(err instanceof Error ? err.message : "BETTER_AUTH_TRUSTED_PROXIES is invalid");

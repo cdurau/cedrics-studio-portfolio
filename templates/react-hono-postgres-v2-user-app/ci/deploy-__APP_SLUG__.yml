@@ -1,0 +1,103 @@
+# Deploy workflow for a user-app (Studio App Contract v2) — SSH-hook variant.
+#
+# Gate review 2026-09-20 (WR-01): the workflow this replaces sent
+# `POST /deploy` and graded itself on that call's HTTP status. A trigger that is
+# accepted is not a deploy that worked — the project's own evidence has a deploy
+# whose trigger returned success and whose container never booted — and the
+# separate owner-role migration step documented in the README was never executed
+# by the pipeline at all.
+#
+# This file is the HOOK variant, chosen over a self-hosted runner. Rationale
+# (see `the unpublished gate-remediation review` § 2):
+#
+#   The runtime repository is the bot-written mirror. A runner registered there
+#   executes the workflow definition of the branch that triggered it — and that
+#   definition is written by the agent. Anyone who can land a branch would run
+#   arbitrary commands on the host as the runner user, with read access to
+#   ~/.local/state/*/secrets.env, the Coolify token, and the Docker socket via
+#   the local VM. A branch guard inside the workflow does not help: it lives in the
+#   same document the attacker controls. That flips the authority boundary S0
+#   exists to draw.
+#
+# Instead this job SSHes into the host and passes ONE thing: the 40-character
+# commit SHA. An sshd forced-command entry
+# (`scripts/deploy-hook.sh` installed at /usr/local/bin/<slug>-deploy-hook)
+# accepts nothing else, and the gate then fetches, checks out and builds from
+# the host's own clone — so the host decides what it builds, not the caller.
+#
+# Required repository secrets:
+#   COOLIFY_DEPLOY_SSH_KEY  private key of the dedicated CI key pair
+#   DEPLOY_HOOK_HOST        the host as reachable in the tailnet
+#   TS_OAUTH_CLIENT_ID, TS_AUDIENCE  (Tailscale join; existing)
+#
+# Substitute __APP_SLUG__ and install as `.github/workflows/deploy-<slug>.yml`.
+name: deploy-__APP_SLUG__
+
+on:
+  push:
+    branches: [migration/coolify-v5]
+    paths:
+      - "apps/__APP_SLUG__/**"
+      - ".github/workflows/deploy-__APP_SLUG__.yml"
+  workflow_dispatch:
+
+concurrency:
+  # Two deploys interleaving migration and cutover is how a server ends up
+  # running against a schema that a later job is still changing.
+  group: deploy-__APP_SLUG__
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    # GitHub-hosted: this job holds no mini-side authority. The only thing it
+    # can do is ask the forced-command hook to deploy one commit.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Refuse anything but the protected branch
+        run: |
+          if [ "${GITHUB_REF}" != "refs/heads/migration/coolify-v5" ]; then
+            echo "refusing to deploy from ${GITHUB_REF}" >&2
+            exit 1
+          fi
+
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          audience: ${{ secrets.TS_AUDIENCE }}
+          tags: tag:ci
+          ping: ${{ secrets.DEPLOY_HOOK_HOST }}
+
+      - name: Prepare the CI key
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.COOLIFY_DEPLOY_SSH_KEY }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+      - name: Deploy gate over the forced-command hook
+        # The SHA is the entire request. sshd forwards it as
+        # SSH_ORIGINAL_COMMAND, the hook validates it against a strict
+        # 40-character lowercase-hex pattern, and nothing else is accepted.
+        env:
+          DEPLOY_HOOK_HOST: ${{ secrets.DEPLOY_HOOK_HOST }}
+        run: |
+          ssh -i ~/.ssh/deploy_key \
+              -o IdentitiesOnly=yes \
+              -o StrictHostKeyChecking=accept-new \
+              -o BatchMode=yes \
+              "ci@${DEPLOY_HOOK_HOST}" "${GITHUB_SHA}"
+
+      - name: Post-deploy acceptance (live origin)
+        # Read-only check from the runner: does the origin actually serve the
+        # app after the gate said it deployed? Independent of the gate's own
+        # container inspection, and it needs no mini-side authority.
+        run: |
+          curl -sS -o /dev/null -w 'origin root: %{http_code}\n' \
+            "https://__APP_SLUG__.exampletailnet.ts.net/"

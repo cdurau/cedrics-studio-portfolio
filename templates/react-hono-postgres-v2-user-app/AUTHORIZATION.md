@@ -55,7 +55,7 @@ so they are reachable only inside the container network.
 
 | Resource | Rule | Enforced by |
 |---|---|---|
-| `entries` | a user may read, insert, update and delete **only** rows where `owner_id` equals their own `users.id` | `ENABLE` + `FORCE ROW LEVEL SECURITY`, policy `entries_owner_policy` (`FOR ALL TO app_runtime`, `USING` and `WITH CHECK` on `owner_id = current_setting('app.user_id', true)::uuid`) |
+| `entries` | a user may read, insert, update and delete **only** rows where `owner_id` equals their own `users.id` | `ENABLE` + `FORCE ROW LEVEL SECURITY`, policy `entries_owner_policy` (`FOR ALL TO app_runtime`, `USING` and `WITH CHECK` on `owner_id = NULLIF(current_setting('app.user_id', true), '')::uuid` — migration 0004) |
 | `users` | identity mapping; not exposed by any route. A user learns only their own `users.id` (via `/api/me`) | application layer only — see §5.1 |
 | Better-Auth tables (`user`, `session`, `account`, `verification`, `rate_limit`) | managed exclusively by Better-Auth; no business route reads or writes them | application layer — see §5.2 |
 
@@ -65,11 +65,25 @@ opens the transaction and sets `set_config('app.user_id', <users.id>, true)`
 the next request over a pooled connection. The user id is passed as a bound
 parameter, never interpolated into SQL text.
 
-**Fail-closed by construction:** if `app.user_id` is not set,
-`current_setting('app.user_id', true)` returns NULL, the comparison
-`owner_id = NULL` evaluates to NULL, and no row qualifies. A missing context
-yields zero rows, never all rows. Contract test 6 verifies this against the
-runtime role by direct SQL, with and without the setting.
+**Fail-closed by construction.** The policy expression is
+`owner_id = NULLIF(current_setting('app.user_id', true), '')::uuid`
+(migration 0004). Two distinct "no context" states must both fail closed, and
+only the `NULLIF` form covers both:
+
+| State | `current_setting('app.user_id', true)` | Without `NULLIF` | With `NULLIF` (0004) |
+|---|---|---|---|
+| setting never set on this connection | `NULL` | `NULL::uuid` → comparison NULL → 0 rows | same → 0 rows |
+| connection reused after an earlier `set_config(…, true)`, read outside a transaction | `''` (empty string, **not** NULL) | `''::uuid` raises `invalid input syntax for type uuid` → **HTTP 500** | `NULL::uuid` → comparison NULL → 0 rows |
+
+The empty-string case is real on a pooled connection: PostgreSQL resets a
+transaction-local `set_config` value to `''` rather than to NULL once the
+transaction ends. The pre-0004 policy therefore turned a correctly denied
+query into a 500 instead of an empty result. In both states no row qualifies —
+a missing context yields zero rows, never all rows.
+
+Contract test 6 verifies this against the runtime role by direct SQL, with the
+setting, without it, and on a reused connection after an earlier transaction
+(the `''` path).
 
 ## 4. Database roles
 
