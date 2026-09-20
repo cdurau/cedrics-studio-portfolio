@@ -43,6 +43,10 @@ Interactive commands require a TTY (`docker exec -it …`); piped stdin is refus
 
 ## Deploy notes (S0-13)
 
+- Generate `app.yaml` by replacing every `__APP_SLUG__` token with the same
+  slug after validating it against `^[a-z0-9][a-z0-9-]*$`. Never choose the
+  origin separately: it is always `<slug>.exampletailnet.ts.net`. Refuse generation
+  if a placeholder remains.
 - Coolify runtime env: `DATABASE_URL` (runtime role), `BETTER_AUTH_SECRETS`, `BETTER_AUTH_URL`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `BETTER_AUTH_TRUSTED_PROXIES` (mandatory in production: comma-separated Traefik CIDR/IP list; without it the IP rate limiter collapses into the global `no-trusted-ip` bucket). Nothing as build arg; `inject_build_args_to_dockerfile=false`.
 - **M5 (Gesamtreview 2026-09-20):** the container CMD is server-only — the owner/migration credential (`MIGRATION_DATABASE_URL`) is **not** in the runtime environment. Migrations run as a **separate pre-start step** in the deploy pipeline: `docker run --rm --env-file <migrate-env> <image> node dist/server/server/migrate.js` with `MIGRATION_DATABASE_URL` (owner role) plus the other required envs, before starting/updating the app container. `migrate.ts` retries transient DB-unavailability errors with bounded backoff (5 attempts) and otherwise fails closed; a DB outage at deploy time no longer produces a migrate/restart loop in the app container.
 - Bootstrap before first boot: create both DB roles (passwords from owner-only secrets file) — the owner role **without** `SUPERUSER`/`BYPASSRLS` (LOW-3/4/5, Gesamtreview 2026-09-20; it only needs its tables' ownership), the runtime role plain `LOGIN`. Then run the migrate step before the first app boot.

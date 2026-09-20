@@ -1,14 +1,17 @@
-# user-app profile manifest — Studio App Contract v2 (S0-13 smoke: ua-smoke)
+# user-app profile manifest — Studio App Contract v2
+# The bounded app generator replaces __APP_SLUG__ only after validating it
+# against ^[a-z0-9][a-z0-9-]*$. The origin remains derived from that slug.
 # Better-Auth in-app auth (forward_auth: false): no Authentik ForwardAuth,
 # no scrub/injector middleware on this origin (deliberate exception, see
 # coolify-app-provisioning skill + CONTRACTS-v2 user-app auth contract).
 schema: 1
-slug: ua-smoke
+slug: "__APP_SLUG__"
+class: user-app
 profile: react-hono-postgres-v2-user-app
 routing:
   mode: service
   # Contract invariant: origin MUST be <slug>.exampletailnet.ts.net.
-  origin: ua-smoke.exampletailnet.ts.net
+  origin: "__APP_SLUG__.exampletailnet.ts.net"
   base_path: /
 database:
   type: postgres

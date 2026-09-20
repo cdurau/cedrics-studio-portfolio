@@ -7,6 +7,29 @@ import { join } from "node:path";
 // Behavioral parts live in tests/integration.test.ts against ephemeral Postgres.
 
 describe("user-app auth contract (static)", () => {
+  it("manifest is a neutral user-app template with derived origin", () => {
+    const manifest = readFileSync(new URL("../app.yaml", import.meta.url), "utf8");
+    const field = (name: string) => {
+      const match = manifest.match(new RegExp(`^\\s*${name}:\\s*[\"']?([^\"'\\s#]+)[\"']?\\s*$`, "m"));
+      return match?.[1];
+    };
+
+    expect(field("class")).toBe("user-app");
+    expect(field("slug")).toBe("__APP_SLUG__");
+    expect(field("origin")).toBe("__APP_SLUG__.exampletailnet.ts.net");
+    expect(manifest).not.toContain("ua-smoke");
+
+    // This is the exact bounded substitution a generator must perform.
+    const generatedSlug = "example-user-app";
+    expect(generatedSlug).toMatch(/^[a-z0-9][a-z0-9-]*$/);
+    const generated = manifest.replaceAll("__APP_SLUG__", generatedSlug);
+    const generatedSlugValue = generated.match(/^\s*slug:\s*[\"']?([^\"'\s#]+)[\"']?\s*$/m)?.[1];
+    const generatedOrigin = generated.match(/^\s*origin:\s*[\"']?([^\"'\s#]+)[\"']?\s*$/m)?.[1];
+    expect(generatedSlugValue).toBe(generatedSlug);
+    expect(generatedOrigin).toBe(`${generatedSlug}.exampletailnet.ts.net`);
+    expect(generated).not.toContain("__APP_SLUG__");
+  });
+
   it("better-auth is pinned exactly to 1.7.5 (no range)", () => {
     const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
     expect(pkg.dependencies["better-auth"]).toBe("1.7.5");
