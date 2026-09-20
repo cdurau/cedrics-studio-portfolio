@@ -16,6 +16,18 @@ export default function App() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loginError, setLoginError] = useState('');
+  const [linkError, setLinkError] = useState('');
+  const [googleLinked, setGoogleLinked] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    if (!session) return;
+    fetch('/api/auth/list-accounts', { credentials: 'include' })
+      .then((res) => (res.ok ? res.json() : []))
+      .then((accounts: Array<{ providerId: string }>) =>
+        setGoogleLinked(accounts.some((a) => a.providerId === 'google')),
+      )
+      .catch(() => setGoogleLinked(null));
+  }, [session]);
 
   useEffect(() => {
     if (session) {
@@ -84,7 +96,8 @@ export default function App() {
   };
 
   const handleLinkGoogle = async () => {
-    await authClient.linkSocial({ provider: 'google', callbackURL: '/' });
+    const { error } = await authClient.linkSocial({ provider: 'google', callbackURL: '/' });
+    if (error) setLinkError(error.message || 'Google-Verknüpfung fehlgeschlagen');
   };
 
   const handleLogout = async () => {
@@ -100,13 +113,18 @@ export default function App() {
           <p className="text-sm text-gray-600">{session.user.email}</p>
         </div>
         <div className="space-x-2">
-          <button onClick={handleLinkGoogle} className="bg-red-500 text-white px-3 py-1 rounded text-sm">
-            Google verknüpfen
+          <button
+            onClick={googleLinked ? undefined : handleLinkGoogle}
+            disabled={googleLinked === true}
+            className={googleLinked ? 'bg-green-600 text-white px-3 py-1 rounded text-sm' : 'bg-red-500 text-white px-3 py-1 rounded text-sm'}
+          >
+            {googleLinked === true ? 'Google verknüpft ✓' : 'Google verknüpfen'}
           </button>
           <button onClick={handleLogout} className="bg-gray-500 text-white px-3 py-1 rounded text-sm">
             Logout
           </button>
         </div>
+        {linkError && <p className="text-red-500 text-sm">{linkError}</p>}
       </div>
 
       <form onSubmit={handleSubmit} className="flex gap-2">
