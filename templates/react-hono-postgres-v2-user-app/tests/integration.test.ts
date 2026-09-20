@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { Pool } from "pg";
 import { join } from "node:path";
 import { execSync, spawn, type ChildProcess } from "node:child_process";
+import { createConnection } from "node:net";
 import { startMockOidc, type MockOidc } from "./mock-oidc";
 
 // Integration suite: CONTRACTS-v2 user-app auth contract, all 12 mandatory
@@ -77,6 +78,11 @@ function startServer(): ChildProcess {
       TEST_OIDC_ISSUER: mock.issuer,
     },
     stdio: ["ignore", "ignore", "pipe"],
+    // Own process group (gesamtreview 2026-09-20, M2): `npx` does not reliably
+    // forward SIGTERM to tsx/node. Killing only the npx pid left the old server
+    // listening on PORT (Linux/npm 10.x), so the restart tests (8, 10, 12) ran
+    // against the OLD process. stopServer() now signals the whole group.
+    detached: true,
   });
   child.stderr?.on("data", (d) => {
     if (process.env.DEBUG_SERVER) process.stdout.write(`[srv] ${d}`);
@@ -84,11 +90,30 @@ function startServer(): ChildProcess {
   return child;
 }
 
+function portIsFree(): Promise<boolean> {
+  return new Promise((resolve) => {
+    const sock = createConnection({ host: "127.0.0.1", port: PORT });
+    sock.once("connect", () => { sock.destroy(); resolve(false); });
+    sock.once("error", () => resolve(true));
+  });
+}
+
 async function stopServer(): Promise<void> {
-  if (serverProcess) {
-    serverProcess.kill("SIGTERM");
-    serverProcess = null;
-    await new Promise((r) => setTimeout(r, 700));
+  if (!serverProcess) return;
+  const pid = serverProcess.pid!;
+  serverProcess = null;
+  const signalGroup = (sig: NodeJS.Signals) => {
+    try { process.kill(-pid, sig); } catch { /* group already gone */ }
+  };
+  signalGroup("SIGTERM");
+  // A restart test is only meaningful if the old server is really gone:
+  // wait until nothing listens on PORT, escalate to SIGKILL, else fail loudly.
+  const deadline = Date.now() + 10000;
+  let killed = false;
+  while (!(await portIsFree())) {
+    if (Date.now() > deadline) throw new Error(`old server still listening on ${PORT} after SIGTERM/SIGKILL`);
+    if (!killed && Date.now() > deadline - 5000) { signalGroup("SIGKILL"); killed = true; }
+    await new Promise((r) => setTimeout(r, 100));
   }
 }
 
@@ -411,5 +436,18 @@ describe("user-app Auth Contract (CONTRACTS-v2 mandatory tests)", () => {
     expect(after.user.filter((u) => u.email === "unverified-google@test.com").length).toBe(0);
     // u1 untouched
     expect(usersIdFor(after, authIdFor(before, "u1@test.com"))).toBe(usersIdFor(before, authIdFor(before, "u1@test.com")));
+  });
+
+  it("14) runtime role has no privileges on the migration journal (gesamtreview M4)", async () => {
+    const { rows } = await ownerPool.query(
+      `SELECT has_table_privilege('app_runtime', 'public.__drizzle_migrations', 'SELECT,INSERT,UPDATE,DELETE') AS any_priv`,
+    );
+    expect(rows[0].any_priv).toBe(false);
+    const rt = new Pool({ connectionString: RUNTIME_URL });
+    try {
+      await expect(rt.query("DELETE FROM public.__drizzle_migrations")).rejects.toThrow(/permission denied/);
+    } finally {
+      await rt.end();
+    }
   });
 });

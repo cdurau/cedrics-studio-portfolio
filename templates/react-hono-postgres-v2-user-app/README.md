@@ -26,6 +26,8 @@ Studio user-app profile implementing the `user-app` auth contract from `template
 
 ## Admin CLI (container/mini only)
 
+Interactive commands require a TTY (`docker exec -it …`); piped stdin is refused with exit 1. The password prompt is not echoed and accepts pasted input.
+
 - `npm run admin:seed-user` — creates a verified user; password via hidden stdin prompt only.
 - `npm run admin:reset-password` — resets a credential password (does **not** end existing sessions — for a compromised password also run `admin:revoke-sessions` afterwards).
 - `npm run admin:revoke-sessions <email>` — incident revoke: deletes all server-side sessions.

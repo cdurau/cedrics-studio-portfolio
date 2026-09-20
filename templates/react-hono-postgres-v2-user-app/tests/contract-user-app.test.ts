@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { execSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 // Contract unit tests (CONTRACTS-v2 user-app auth contract, static parts).
@@ -68,6 +68,25 @@ describe("user-app auth contract (static)", () => {
     expect(sql).not.toMatch(/CREATE ROLE .* PASSWORD '.*'/);
     expect(sql).toContain("FORCE ROW LEVEL SECURITY");
     expect(sql).toContain("app_runtime");
+  });
+
+  it("migration 0003 revokes the migration journal from the runtime role (gesamtreview M4)", () => {
+    const sql = readFileSync(new URL("../drizzle/migrations/0003_revoke_journal_from_runtime.sql", import.meta.url), "utf8");
+    expect(sql).toMatch(/REVOKE ALL ON TABLE public\.__drizzle_migrations FROM app_runtime/);
+    const journal = JSON.parse(readFileSync(new URL("../drizzle/migrations/meta/_journal.json", import.meta.url), "utf8"));
+    expect(journal.entries.map((e: { tag: string }) => e.tag)).toContain("0003_revoke_journal_from_runtime");
+  });
+
+  // Only meaningful inside the planning repo (templates/<profile>/); a copied
+  // app has its own CODEOWNERS layout, so the check is skipped there.
+  const repoCodeowners = new URL("../../../CODEOWNERS", import.meta.url);
+  it.skipIf(!existsSync(repoCodeowners))("CODEOWNERS assigns the auth modules to the repo owner, not a foreign account (gesamtreview M3)", () => {
+    const owners = readFileSync(repoCodeowners, "utf8");
+    for (const path of ["source/server/auth.ts", "source/client/auth.ts"]) {
+      const line = owners.split("\n").find((l) => l.includes(`react-hono-postgres-v2-user-app/${path}`));
+      expect(line, `CODEOWNERS entry for ${path}`).toBeDefined();
+      expect(line!.trim().split(/\s+/).slice(1)).toEqual(["@cdurau"]);
+    }
   });
 
   it("env validation: BETTER_AUTH_SECRETS rejects malformed/duplicate/empty entries", async () => {
