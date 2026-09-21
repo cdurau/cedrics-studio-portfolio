@@ -6,17 +6,32 @@
 #   * The runner refuses ANY migration whose tag is missing here, and refuses a
 #     tag whose content hash differs. Owner rights therefore only ever execute
 #     SQL that a human approved by exact content.
+#   * The mandatory "# commit <full-40-char-sha>" line binds the list to the
+#     commit the human reviewed. The deploy gate refuses a list whose commit line
+#     is not the commit being deployed, so an approval cannot silently be reused
+#     for a different tree (third review round, finding C).
 #
 # Install target: /usr/local/libexec/studio-deploy/approved-migrations/<slug>.txt
 #                 (root-owned, mode 0644; the agent can read, not write)
 #
-# Updating it is an owner step: review the diff of the new migration SQL, then
-# add/adjust the line. `scripts/print-approvals.sh <repo> <slug>` prints the
-# exact lines for a checkout so the review is mechanical.
+# Updating it is an owner step, and it is NOT "run an agent script and pipe it to
+# sudo tee" (third round, finding C):
 #
-# Keep this file free of secrets — it holds only tags and content hashes.
+#   1. ./platform/studio-deploy/find-approvals.sh <checkout> <slug>
+#        prints tag, file and hash for review — read the SQL it names
+#   2. read the diff:  git -C <checkout> diff <base>..HEAD -- apps/<slug>/drizzle/migrations
+#   3. write the proposed list (find-approvals.sh <checkout> <slug> --for-install)
+#   4. independently check it — recomputes every hash with /usr/bin/shasum:
+#        ./platform/studio-deploy/verify-approvals.sh <checkout> <slug> <proposed.txt>
+#      (by hand, without any project script):
+#        (cd <checkout>/apps/<slug>/drizzle/migrations && /usr/bin/shasum -a 256 *.sql)
+#   5. sudo install -m 0644 -o root -g wheel <proposed.txt> \
+#        /usr/local/libexec/studio-deploy/approved-migrations/<slug>.txt
+#
+# Keep this file free of secrets — it holds only tags, hashes and one commit sha.
 
 # --- example (replace with the real approved set at install time) ------------
+# commit 0000000000000000000000000000000000000000
 # 0000_sad_nocturne                 <sha256>
 # 0001_smiling_martin_li            <sha256>
 # 0002_rls_and_grants               <sha256>

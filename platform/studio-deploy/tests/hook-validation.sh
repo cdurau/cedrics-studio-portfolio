@@ -11,34 +11,43 @@
 # therefore assert (a) the input validation and (b) that a valid SHA is handed to
 # the trusted gate unchanged.
 #
+# Third round (finding A): the hook now reads its gate path from a LITERAL
+# substituted at install time, not from GATE/GATE_REPO/GATE_REF in the
+# environment. The suite builds a substituted copy (tests/lib/harness.sh) and
+# additionally proves that an exported GATE cannot redirect it.
+#
 # No SSH and no live system are involved: SSH_ORIGINAL_COMMAND is set directly.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-HOOK="${HOOK:-$HERE/../deploy-hook.sh}"
-[ -x "$HOOK" ] || { echo "missing hook at $HOOK" >&2; exit 2; }
+# shellcheck source=tests/lib/harness.sh
+. "$HERE/lib/harness.sh"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 fail=0
 
+TRUST="$WORK/trust"
+mkdir -p "$TRUST"
+
 # A stand-in gate that records what it was asked to deploy, so the "valid input
-# reaches the gate unchanged" half of the contract is observable.
-GATE_STUB="$WORK/deploy-gate"
+# reaches the gate unchanged" half of the contract is observable. It must be
+# named exactly as the hook's literal path expects.
+GATE_STUB="$TRUST/ua-smoke-deploy-gate"
 cat > "$GATE_STUB" <<'STUB'
 #!/usr/bin/env bash
-printf 'GATE-INVOKED argv1=%s APP_SLUG=%s GATE_REPO=%s GATE_REF=%s\n' \
-  "$1" "${APP_SLUG:-}" "${GATE_REPO:-}" "${GATE_REF:-}"
+printf 'GATE-INVOKED argv1=%s argc=%s PATH=%s\n' "$1" "$#" "${PATH:-}"
 exit 0
 STUB
 chmod 755 "$GATE_STUB"
 
+HOOK="$WORK/ua-smoke-deploy-hook"
+build_hook "$HOOK" ua-smoke "$TRUST" "$WORK/deploy-clone"
+
 GOOD_SHA="07759121ba315a6c6a4f9dc3ec1f95d07b4059a9"
 
 run_hook() { # run_hook <SSH_ORIGINAL_COMMAND>
-  SSH_ORIGINAL_COMMAND="$1" GATE="$GATE_STUB" APP_SLUG=ua-smoke \
-    GATE_REPO="$WORK/clone" GATE_REF="migration/coolify-v5" \
-    "$HOOK" 2>&1
+  SSH_ORIGINAL_COMMAND="$1" "$HOOK" 2>&1
 }
 
 expect() { # expect <ACCEPT|REJECT> <label> <command>
@@ -95,7 +104,7 @@ expect REJECT "S) embedded NUL-free whitespace tricks" "$(printf '%s\t' "$GOOD_S
 echo
 echo "== the valid sha reaches the gate unchanged =="
 out="$(run_hook "$GOOD_SHA")"
-if printf '%s' "$out" | grep -q "argv1=$GOOD_SHA"; then
+if printf '%s' "$out" | grep -q "argv1=$GOOD_SHA" && printf '%s' "$out" | grep -q "argc=1"; then
   echo "PASS  the gate receives the requested commit as its single argument"
 else
   echo "FAIL  the gate did not receive the expected commit" >&2
@@ -113,6 +122,50 @@ if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "must not be writable by grou
   echo "PASS  a world-writable gate is refused"
 else
   echo "FAIL  a world-writable gate was accepted" >&2; fail=1
+fi
+
+echo
+echo "== an exported GATE cannot redirect the forced command (finding A) =="
+# This is the decisive one for the boundary: if the environment could choose the
+# gate, a caller would decide what runs next to the owner credential.
+EVIL="$WORK/evil-gate"
+printf '#!/usr/bin/env bash\necho "EVIL-GATE-RAN"\nexit 0\n' > "$EVIL"
+chmod 755 "$EVIL"
+set +e
+out="$(GATE="$EVIL" run_hook "$GOOD_SHA")"; rc=$?
+set -e
+if printf '%s' "$out" | grep -q "EVIL-GATE-RAN"; then
+  echo "FAIL  an exported GATE redirected the hook to attacker-chosen code" >&2; fail=1
+elif [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q "GATE-INVOKED"; then
+  echo "PASS  GATE in the environment is ignored; the literal gate ran"
+else
+  echo "FAIL  the run neither used the literal gate nor refused" >&2
+  printf '%s\n' "$out" | tail -3 >&2; fail=1
+fi
+
+# Same for a whole fake trust root: TRUST_DIR in the environment must not move it.
+EVILTRUST="$WORK/evil-trust"
+mkdir -p "$EVILTRUST"
+cp "$EVIL" "$EVILTRUST/ua-smoke-deploy-gate"
+set +e
+out="$(TRUST_DIR="$EVILTRUST" run_hook "$GOOD_SHA")"; rc=$?
+set -e
+if printf '%s' "$out" | grep -q "EVIL-GATE-RAN"; then
+  echo "FAIL  an exported TRUST_DIR redirected the hook" >&2; fail=1
+else
+  echo "PASS  TRUST_DIR in the environment is ignored; the literal trust dir is used"
+fi
+
+echo
+echo "== the installed hook passes a sanitised environment =="
+# The stub prints the PATH it was given; the hook runs it under `env -i`, so the
+# caller's environment must not survive into the privileged process.
+out="$(CALLER_MARKER=leaked run_hook "$GOOD_SHA")"
+if printf '%s' "$out" | grep -q "PATH=/usr/bin:/bin:/usr/sbin:/sbin"; then
+  echo "PASS  the gate runs with the hook's own PATH, not the session's"
+else
+  echo "FAIL  the gate did not receive the sanitised PATH" >&2
+  printf '%s\n' "$out" >&2; fail=1
 fi
 
 echo

@@ -13,9 +13,20 @@
 # Any unexpected `run` (i.e. something trying to reach a database) fails loudly
 # with a distinct exit code, so a test can assert that no database contact
 # happened at all.
+#
+# FAKE_DOCKER_LOG (test double configuration only — never part of the production
+# trust path): when set, `run` is recorded there and succeeds instead of exiting
+# 97. The migration-approval suite uses that to observe whether a run reached the
+# database step at all, and to read back the image/binary the runner actually
+# used — which is how "an environment override did not redirect the trust path"
+# is proven rather than assumed.
 set -euo pipefail
 
 SCEN="${FAKE_DOCKER_SCENARIO:?FAKE_DOCKER_SCENARIO must point at a scenario file}"
+
+# Keep the original argv: the gate/runner pass a pinned image and network, and the
+# log must show what they really used, not what a caller asked for.
+ORIG_ARGS=("$@")
 
 # The gate invokes "<docker> --context <ctx> <subcommand> ..."; skip the leading
 # global options before reading the subcommand.
@@ -66,6 +77,10 @@ case "$cmd" in
     ;;
 
   run)
+    if [ -n "${FAKE_DOCKER_LOG:-}" ]; then
+      printf '%s\n' "${ORIG_ARGS[*]}" >> "$FAKE_DOCKER_LOG"
+      exit 0
+    fi
     echo "FAKE-DOCKER: unexpected 'run' — something tried to reach the database" >&2
     exit 97
     ;;

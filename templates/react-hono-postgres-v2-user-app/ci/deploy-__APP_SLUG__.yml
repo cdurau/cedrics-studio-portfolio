@@ -39,7 +39,25 @@
 # Required repository secrets:
 #   COOLIFY_DEPLOY_SSH_KEY  private key of the dedicated CI key pair
 #   DEPLOY_HOOK_HOST        the host as reachable in the tailnet
+#   DEPLOY_HOOK_HOST_KEY    the host's SSH host key, as one known_hosts line
+#   DEPLOY_HOOK_HOST_FP     its SHA256 fingerprint, e.g. SHA256:abc... (pinned)
 #   TS_OAUTH_CLIENT_ID, TS_AUDIENCE  (Tailscale join; existing)
+#
+# Third review round, finding F: host-key trust.
+#   The workflow used `StrictHostKeyChecking=accept-new`. On an ephemeral
+#   GitHub runner there is normally no known_hosts at all, so EVERY run was a
+#   first use — i.e. it accepted whatever host key answered first, on every
+#   single deploy. Tailscale reduces the exposure (the peer identity is
+#   authenticated by the tailnet before TCP), but it does not create an SSH-level
+#   binding, and a tailnet compromise or a mis-issued serve config would go
+#   unnoticed. The host key is therefore PINNED: DEPLOY_HOOK_HOST_KEY is written
+#   to known_hosts, its fingerprint is compared against DEPLOY_HOOK_HOST_FP
+#   before the connection, and the connection itself runs with
+#   StrictHostKeyChecking=yes so a mismatch is a hard failure rather than a
+#   prompt nobody sees. Both values are public data (a host key is not a secret),
+#   but they must be pinned deliberately: retrieve them once from the host with
+#   `ssh-keyscan` / `ssh-keygen -lf` while it is trusted, and treat a change as a
+#   change of the endpoint.
 #
 # Substitute __APP_SLUG__ and install as `.github/workflows/deploy-<slug>.yml`.
 name: deploy-__APP_SLUG__
@@ -88,6 +106,24 @@ jobs:
           tags: tag:ci
           ping: ${{ secrets.DEPLOY_HOOK_HOST }}
 
+      - name: Pin the deploy host's SSH host key
+        # Finding F. The pinned key must match the pinned fingerprint before it is
+        # used, so a wrong secret is a failed run, not a silent trust decision.
+        env:
+          HOST_KEY: ${{ secrets.DEPLOY_HOOK_HOST_KEY }}
+          HOST_FP: ${{ secrets.DEPLOY_HOOK_HOST_FP }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$HOST_KEY" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          got="$(ssh-keygen -lf ~/.ssh/known_hosts | awk '{print $2}')"
+          if [ "$got" != "$HOST_FP" ]; then
+            echo "known-host fingerprint mismatch: pinned $HOST_FP, key is $got" >&2
+            exit 1
+          fi
+          echo "pinned host key fingerprint $got"
+
       - name: Prepare the CI key
         env:
           DEPLOY_SSH_KEY: ${{ secrets.COOLIFY_DEPLOY_SSH_KEY }}
@@ -102,12 +138,15 @@ jobs:
         # 40-character lowercase-hex pattern, and nothing else is accepted. The
         # trusted gate on the host binds it to the allowed ref, migrates only
         # approved migration content, then verifies the serving container.
+        #
+        # StrictHostKeyChecking=yes against the pinned known_hosts above: a host
+        # key that does not match is a hard failure (finding F).
         env:
           DEPLOY_HOOK_HOST: ${{ secrets.DEPLOY_HOOK_HOST }}
         run: |
           ssh -i ~/.ssh/deploy_key \
               -o IdentitiesOnly=yes \
-              -o StrictHostKeyChecking=accept-new \
+              -o StrictHostKeyChecking=yes \
               -o BatchMode=yes \
               "ci@${DEPLOY_HOOK_HOST}" "${GITHUB_SHA}"
 

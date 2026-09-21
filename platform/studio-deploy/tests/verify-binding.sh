@@ -7,9 +7,12 @@
 # monorepo several apps carry the same commit, so a healthy container of ANOTHER
 # app could turn a failed deploy of this app green.
 #
-# These cases run the real gate in VERIFY_ONLY=1 against a synthetic container
-# world (tests/fake-docker.sh), so they need no live deployment and can
-# deterministically present "another app, same commit" — which a live test cannot.
+# These cases run the gate in verify mode against a synthetic container world
+# (tests/fake-docker.sh), so they need no live deployment and can deterministically
+# present "another app, same commit" — which a live test cannot.
+#
+# Third round (finding A): the suite runs a SUBSTITUTED COPY of the gate built by
+# tests/lib/harness.sh, not the canonical script with STATE_DIR/TRUST_DIR exported.
 #
 #   A) target app, full commit, healthy               -> PASS
 #   B) same commit but a DIFFERENT app                -> FAIL (the false-green)
@@ -22,14 +25,13 @@
 # Every FAIL case also asserts the REASON, so a rejection from the wrong branch
 # of the logic cannot be mistaken for a pass.
 #
-# VERIFY_ONLY must read no owner credential and no Coolify token: the gate runs
-# with a state dir that has neither, and the docker stand-in exits loudly on any
-# `run` (i.e. any attempt to reach a database).
+# Verify mode must read no owner credential and no Coolify token: the state dir
+# has neither, and the docker stand-in exits loudly on any `run`.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-GATE="${GATE:-$HERE/../deploy-gate.sh}"
-[ -x "$GATE" ] || { echo "missing gate at $GATE" >&2; exit 2; }
+# shellcheck source=tests/lib/harness.sh
+. "$HERE/lib/harness.sh"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -64,26 +66,25 @@ seen="$(FAKE_DOCKER_SCENARIO="$SCEN" "$FAKE" --context devbox ps --filter "label
   || { echo "docker stand-in failed to run: $seen" >&2; exit 2; }
 [ "$seen" = "c-ok" ] || { echo "docker stand-in did not report the scenario container (got '$seen')" >&2; exit 2; }
 
-# App identity files: NOT secrets, and VERIFY_ONLY is allowed to read them. The
-# directory deliberately lacks coolify_token and migrate.env, so a VERIFY_ONLY
-# run that suddenly demanded a credential would fail here.
+# App identity files: NOT secrets, and verify mode is allowed to read them. The
+# directory deliberately lacks coolify_token and migrate.env, so a verify run that
+# suddenly demanded a credential would fail here.
 STATE="$WORK/state"
 mkdir -p "$STATE"
 printf '%s\n' "$APP_UUID" > "$STATE/coolify_uuid.txt"
 printf '%s\n' "$APP_ID"   > "$STATE/coolify_app_id.txt"
 
-# VERIFY_ONLY skips the trusted-component preflight by design; point TRUST_DIR at
-# an empty dir so a regression that starts demanding the runner there is visible.
+# verify mode does not read the trusted runner/approvals; point the substituted
+# gate at an empty trust dir so a regression that starts demanding them is visible.
 TRUST="$WORK/trust"
 mkdir -p "$TRUST"
 
-run_verify() { # run_verify <sha>
-  VERIFY_ONLY=1 APP_SLUG=ua-smoke STATE_DIR="$STATE" TRUST_DIR="$TRUST" \
-    MIGRATE_RUNNER="$TRUST/ua-smoke-migrate-runner" \
-    APPROVALS_FILE="$TRUST/approved-migrations/ua-smoke.txt" \
-    FAKE_DOCKER_SCENARIO="$SCEN" DOCKER_BIN="$FAKE" \
-    DOCKER_CONTEXT=devbox HEALTH_TIMEOUT=1 POLL_INTERVAL=1 \
-    "$GATE" "$1" 2>&1
+GATE="$WORK/ua-smoke-deploy-gate"
+build_gate "$GATE" ua-smoke "$TRUST" "$STATE" "$WORK/deploy-clone" "$FAKE" 1 1
+
+run_verify() { # run_verify <sha> — the docker world is injected via the stand-in
+  # FAKE_DOCKER_SCENARIO is a property of the *test double*, not of the gate.
+  FAKE_DOCKER_SCENARIO="$SCEN" "$GATE" --verify-only "$1" 2>&1
 }
 
 expect() { # expect <PASS|FAIL> <label> <sha> [required-substring]
@@ -111,7 +112,7 @@ expect() { # expect <PASS|FAIL> <label> <sha> [required-substring]
   echo "PASS  $label"
 }
 
-echo "== verification binding (VERIFY_ONLY) =="
+echo "== verification binding (verify mode) =="
 
 # A) the target app at the full commit, healthy.
 scenario "$(printf 'c-ok\t%s\t%s\t%s:%s\t\thealthy\n' "$APP_UUID" "$APP_ID" "$APP_UUID" "$FULL_SHA")"
@@ -147,9 +148,9 @@ scenario "$(printf 'c-ok\t%s\t%s\t%s:untagged\t%s\thealthy\n' "$APP_UUID" "$APP_
 expect PASS "G) full commit satisfied by the commit label alone" "$FULL_SHA"
 
 echo
-echo "== VERIFY_ONLY reads no credential and mutates nothing =="
-# The real gate's docker stand-in exits 97 on any `run`, so a migration attempt
-# inside VERIFY_ONLY cannot go unnoticed; and STATE_DIR holds no token.
+echo "== verify mode reads no credential and mutates nothing =="
+# The docker stand-in exits 97 on any `run`, so a migration attempt inside verify
+# mode cannot go unnoticed; and the state dir holds no token or env file.
 scenario "$(printf 'c-ok\t%s\t%s\t%s:%s\t\thealthy\n' "$APP_UUID" "$APP_ID" "$APP_UUID" "$FULL_SHA")"
 out="$(run_verify "$FULL_SHA")" || true
 if printf '%s' "$out" | grep -q "credential files are not required and not read"; then
@@ -158,7 +159,7 @@ else
   echo "FAIL  the run did not confirm credential-free operation" >&2; fail=1
 fi
 if printf '%s' "$out" | grep -q "FAKE-DOCKER: unexpected 'run'"; then
-  echo "FAIL  VERIFY_ONLY tried to reach the database" >&2; fail=1
+  echo "FAIL  verify mode tried to reach the database" >&2; fail=1
 else
   echo "PASS  no database contact occurred"
 fi

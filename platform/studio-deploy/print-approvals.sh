@@ -1,33 +1,26 @@
 #!/usr/bin/env bash
-# Print the exact approval lines for a checkout, so reviewing a new migration is
-# mechanical instead of error-prone.
+# Convenience: print an installable approval list for a checkout.
 #
-#   scripts/print-approvals.sh <path-to-checkout> <slug>
+# Gate review 2026-09-21, third round — finding C.
 #
-# Emits "<tag> <sha256>" for every journal entry of
-# <checkout>/apps/<slug>/drizzle/migrations, in journal order — paste the result
-# into /usr/local/libexec/studio-deploy/approved-migrations/<slug>.txt after
-# reading the SQL diff. Nothing is written automatically and no credential is
-# read; this only prints hashes of files that are already on disk.
+# This script is NOT the approval authority. It lives in the agent-writable
+# planning repo, so its output must never be the thing a human signs off on
+# without checking it. It is kept as a one-line convenience over find-approvals.sh
+# and now emits the "# commit <sha>" line that binds the list to a commit.
+#
+# The honest owner procedure is:
+#
+#   ./platform/studio-deploy/find-approvals.sh <checkout> <slug>            # review view
+#   $EDITOR <proposed.txt>                                                 # after reading the SQL diff
+#   ./platform/studio-deploy/verify-approvals.sh <checkout> <slug> <proposed.txt>
+#   sudo install -m 0644 -o root -g wheel <proposed.txt> \
+#     /usr/local/libexec/studio-deploy/approved-migrations/<slug>.txt
+#
+# i.e. the human approves, an independent check recomputes the hashes, and only
+# then is the root-owned file installed. `print-approvals | sudo tee` is no longer
+# the procedure: it made agent-written code the source of the hashes that owner
+# rights obey.
 set -euo pipefail
 
-REPO="${1:-}"
-SLUG="${2:-}"
-[ -n "$REPO" ] && [ -d "$REPO" ] || { echo "usage: $0 <path-to-checkout> <slug>" >&2; exit 2; }
-[ -n "$SLUG" ] || { echo "usage: $0 <path-to-checkout> <slug>" >&2; exit 2; }
-
-MIG_DIR="$REPO/apps/$SLUG/drizzle/migrations"
-JOURNAL="$MIG_DIR/meta/_journal.json"
-[ -r "$JOURNAL" ] || { echo "no migration journal at $JOURNAL" >&2; exit 1; }
-
-digest() {
-  if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'; else sha256sum "$1" | awk '{print $1}'; fi
-}
-
-printf '# %s — approved migrations for %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$SLUG"
-printf '# review the SQL diff before pasting: owner rights run exactly this content\n'
-jq -r '.entries[].tag' "$JOURNAL" | while IFS= read -r tag; do
-  file="$MIG_DIR/$tag.sql"
-  [ -r "$file" ] || { echo "journal entry $tag has no SQL file $file" >&2; exit 1; }
-  printf '%s %s\n' "$tag" "$(digest "$file")"
-done
+HERE="$(cd "$(dirname "$0")" && pwd)"
+exec /bin/bash "$HERE/find-approvals.sh" "$@" --for-install

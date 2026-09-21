@@ -21,12 +21,24 @@
 #   * it needs no agent build at all — the pinned postgres image provides psql,
 #     so no agent-authored binary ever holds the owner credential.
 #
+# NO ENVIRONMENT OVERRIDE REACHES THE TRUST PATH (third round, finding A)
+# ---------------------------------------------------------------------
+# This script reads the owner credential, exports PGPASSWORD and then starts a
+# container. That makes every path and image it uses part of the credential
+# path: if PSQL_IMAGE, DOCKER_BIN or DOCKER_CONTEXT could be set by an untrusted
+# caller, agent-controlled code would get the owner credential back. They are
+# therefore literals, and the *arguments* are pinned too: the runner only acts
+# when it is called with the exact production paths it was installed for, so a
+# direct call with an attacker-chosen env-file or approvals list is refused
+# before any credential is read.
+#
 # Order is deliberate: every journal entry is validated and every hash compared
 # against the approval list BEFORE the first byte reaches the database. A
 # rejected set therefore cannot have touched anything.
 #
-# Usage: migrate-runner.sh <migrations-dir> <owner-env-file> <approvals-file>
-#   <migrations-dir>  the "drizzle/migrations" tree of the requested commit
+# Usage: <slug>-migrate-runner <migrations-dir> <owner-env-file> <approvals-file>
+#   <migrations-dir>  the "drizzle/migrations" tree of the requested commit,
+#                     below the installed clone
 #   <owner-env-file>  mode-600 file on this host containing MIGRATION_DATABASE_URL
 #   <approvals-file>  root-owned list of approved migrations, "<tag> <sha256>"
 #                     per line ('#' comments and blanks ignored)
@@ -35,45 +47,60 @@
 # migrate.ts, so an existing deployment upgrades in place).
 set -euo pipefail
 
-PSQL_IMAGE="${PSQL_IMAGE:-postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2}"
-DOCKER_BIN="${DOCKER_BIN:-docker}"
-DOCKER_CONTEXT="${DOCKER_CONTEXT-devbox}"
-DB_NETWORK="${DB_NETWORK:-coolify}"
+# --- the literal trust path (substituted once at install) -------------------
+SLUG="__APP_SLUG__"
+TRUST_DIR="__TRUST_DIR__"
+STATE_DIR="__STATE_DIR__"
+GATE_REPO="__GATE_REPO__"
+DOCKER_BIN="__DOCKER_BIN__"
 
-# Docker goes through a function rather than a "docker --context x" string that
-# has to be word-split. A command string breaks wherever IFS has been changed for
-# another purpose, which silently turns "docker inspect" into a single unknown
-# command name.
-d() {
-  if [ -n "$DOCKER_CONTEXT" ]; then
-    "$DOCKER_BIN" --context "$DOCKER_CONTEXT" "$@"
-  else
-    "$DOCKER_BIN" "$@"
-  fi
-}
+PSQL_IMAGE="__PSQL_IMAGE__"
+DOCKER_CONTEXT="devbox"
+DB_NETWORK="coolify"
+
+EXPECTED_ENV_FILE="$STATE_DIR/migrate.env"
+EXPECTED_APPROVALS_FILE="$TRUST_DIR/approved-migrations/${SLUG}.txt"
+
+log() { printf '[migrate-runner] %s\n' "$*"; }
+die() { printf '[migrate-runner] FAIL: %s\n' "$*" >&2; exit 1; }
+
+case "$SLUG$TRUST_DIR$STATE_DIR$GATE_REPO$DOCKER_BIN$PSQL_IMAGE" in
+  *__*) die "unsubstituted placeholder in the installed runner — this is the canonical source, not an installed component" ;;
+esac
+
+# Deterministic tool resolution; the system jq/awk are root-owned.
+PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH
 
 MIG_DIR="${1:-}"
 ENV_FILE="${2:-}"
 APPROVALS="${3:-}"
 
-log() { printf '[migrate-runner] %s\n' "$*"; }
-die() { printf '[migrate-runner] FAIL: %s\n' "$*" >&2; exit 1; }
-
 USAGE="usage: $0 <migrations-dir> <owner-env-file> <approvals-file>"
 [ -n "$MIG_DIR" ] && [ -d "$MIG_DIR" ] || { echo "$USAGE" >&2; exit 2; }
 [ -n "$ENV_FILE" ] && [ -r "$ENV_FILE" ] || { echo "$USAGE" >&2; exit 2; }
 [ -n "$APPROVALS" ] && [ -r "$APPROVALS" ] || { echo "$USAGE" >&2; exit 2; }
+[ "$#" -eq 3 ] || die "expected exactly three arguments, got $#"
+
+# --- call-shape pinning: only the production paths are acted on -------------
+# A direct call with a caller-chosen state or approvals path is refused. This
+# removes the "invoke the trusted runner as an argument-laundering step" path
+# even for a caller that can execute the file.
+[ "$ENV_FILE" = "$EXPECTED_ENV_FILE" ] \
+  || die "refusing owner env-file '$ENV_FILE' — the runner only reads its installed path $EXPECTED_ENV_FILE"
+[ "$APPROVALS" = "$EXPECTED_APPROVALS_FILE" ] \
+  || die "refusing approvals list '$APPROVALS' — the runner only reads its installed path $EXPECTED_APPROVALS_FILE"
+case "$MIG_DIR" in
+  "$GATE_REPO"/*) : ;;
+  *) die "refusing migrations dir '$MIG_DIR' — it is not below the installed clone $GATE_REPO" ;;
+esac
 
 JOURNAL="$MIG_DIR/meta/_journal.json"
 [ -r "$JOURNAL" ] || die "missing migration journal at $JOURNAL"
 command -v jq >/dev/null 2>&1 || die "jq is required to read the migration journal"
 
 digest() { # digest <file>
-  if command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$1" | awk '{print $1}'
-  else
-    sha256sum "$1" | awk '{print $1}'
-  fi
+  shasum -a 256 "$1" | awk '{print $1}'
 }
 
 # --- phase 1: validate the whole set before anything touches the database ----
@@ -143,7 +170,7 @@ export PGDATABASE="${PGDATABASE%%\?*}"
   || die "could not parse MIGRATION_DATABASE_URL (need user:pass@host:port/db)"
 
 psql_in() { # psql_in [psql args...] — SQL arrives on stdin when needed
-  d run --rm -i --network "$DB_NETWORK" \
+  "$DOCKER_BIN" --context "$DOCKER_CONTEXT" run --rm -i --network "$DB_NETWORK" \
     -e PGHOST -e PGPORT -e PGUSER -e PGPASSWORD -e PGDATABASE \
     -v "$MIG_DIR":/migrations:ro \
     --entrypoint psql "$PSQL_IMAGE" -v ON_ERROR_STOP=1 "$@"
