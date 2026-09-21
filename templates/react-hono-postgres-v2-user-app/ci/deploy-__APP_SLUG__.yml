@@ -7,6 +7,18 @@
 # separate owner-role migration step documented in the README was never executed
 # by the pipeline at all.
 #
+# Second review round (findings 1 and 4):
+#   * The trusted deploy logic NO LONGER lives in the runtime repository. The
+#     repository the deploy agent writes is demoted to build/source input; the
+#     gate and the migration runner are root-owned under
+#     /usr/local/libexec/studio-deploy/ and this workflow can only ASK them to
+#     deploy one commit. See platform/studio-deploy/README.md.
+#   * The post-deploy step used to `curl` the root path WITHOUT `--fail`, so an
+#     HTTP 500 did not even fail the shell step, and nothing but the root path
+#     was checked. It now runs the app's committed acceptance preflight (the 9/9
+#     invariant set) and, when no app-specific preflight exists, asserts the
+#     contract invariants inline with `--fail` and explicit status comparison.
+#
 # This file is the HOOK variant, chosen over a self-hosted runner. Rationale
 # (see `the unpublished gate-remediation review` § 2):
 #
@@ -21,9 +33,8 @@
 #
 # Instead this job SSHes into the host and passes ONE thing: the 40-character
 # commit SHA. An sshd forced-command entry
-# (`scripts/deploy-hook.sh` installed at /usr/local/bin/<slug>-deploy-hook)
-# accepts nothing else, and the gate then fetches, checks out and builds from
-# the host's own clone — so the host decides what it builds, not the caller.
+# (platform/studio-deploy/deploy-hook.sh installed as
+# /usr/local/bin/<slug>-deploy-hook) accepts nothing else.
 #
 # Required repository secrets:
 #   COOLIFY_DEPLOY_SSH_KEY  private key of the dedicated CI key pair
@@ -65,6 +76,10 @@ jobs:
             exit 1
           fi
 
+      - name: Checkout
+        # Needed only to run this app's committed acceptance preflight below.
+        uses: actions/checkout@v4
+
       - name: Connect to Tailscale
         uses: tailscale/github-action@v4
         with:
@@ -84,7 +99,9 @@ jobs:
       - name: Deploy gate over the forced-command hook
         # The SHA is the entire request. sshd forwards it as
         # SSH_ORIGINAL_COMMAND, the hook validates it against a strict
-        # 40-character lowercase-hex pattern, and nothing else is accepted.
+        # 40-character lowercase-hex pattern, and nothing else is accepted. The
+        # trusted gate on the host binds it to the allowed ref, migrates only
+        # approved migration content, then verifies the serving container.
         env:
           DEPLOY_HOOK_HOST: ${{ secrets.DEPLOY_HOOK_HOST }}
         run: |
@@ -95,9 +112,55 @@ jobs:
               "ci@${DEPLOY_HOOK_HOST}" "${GITHUB_SHA}"
 
       - name: Post-deploy acceptance (live origin)
-        # Read-only check from the runner: does the origin actually serve the
-        # app after the gate said it deployed? Independent of the gate's own
+        # Read-only check from the runner: does the origin actually serve the app
+        # after the gate said it deployed? Independent of the gate's own
         # container inspection, and it needs no mini-side authority.
+        #
+        # The earlier version `curl`ed the root path without `--fail`, so an
+        # HTTP 500 did not fail the step, and it asserted nothing else. Both
+        # problems are fixed: the committed preflight is preferred, and the
+        # inline fallback fails on any non-matching status.
+        env:
+          ORIGIN: "https://__APP_SLUG__.exampletailnet.ts.net"
         run: |
-          curl -sS -o /dev/null -w 'origin root: %{http_code}\n' \
-            "https://__APP_SLUG__.exampletailnet.ts.net/"
+          set -euo pipefail
+          ACC="apps/__APP_SLUG__/tests/__APP_SLUG__-acceptance.sh"
+
+          if [ -x "$ACC" ]; then
+            # The app's own invariant set (routing, health exclusion, auth gate,
+            # header spoofing, TLS). It exits non-zero on any failure, so a
+            # partial outage cannot pass unnoticed.
+            echo "running $ACC preflight"
+            "$ACC" preflight
+            exit 0
+          fi
+
+          echo "no app-specific preflight committed — asserting the contract invariants inline"
+          assert_status() { # assert_status <label> <expected> <curl args...>
+            local label="$1" expected="$2"; shift 2
+            local got
+            # -sS so a transport error is visible; --fail is deliberately NOT
+            # used here because the expected status is sometimes 4xx/5xx and we
+            # assert it explicitly instead.
+            got="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$@")"
+            if [ "$got" != "$expected" ]; then
+              echo "FAIL $label: got $got, expected $expected" >&2
+              exit 1
+            fi
+            echo "PASS $label ($got)"
+          }
+
+          TLS="$(curl -sS -o /dev/null -w '%{http_code} %{ssl_verify_result}' --max-time 20 "$ORIGIN/")"
+          case "$TLS" in
+            "200 0") echo "PASS root serves 200 with verified TLS" ;;
+            *) echo "FAIL root: got '$TLS', expected '200 0'" >&2; exit 1 ;;
+          esac
+
+          # Health endpoints must not be reachable from outside the router.
+          assert_status "healthz excluded from the public router" 404 "$ORIGIN/healthz"
+          assert_status "readyz excluded from the public router"  404 "$ORIGIN/readyz"
+          # Business route must reject unauthenticated access...
+          assert_status "unauthenticated business route rejected" 401 "$ORIGIN/api/entries"
+          # ...and must not be fooled by a spoofed proxy-auth header.
+          assert_status "spoofed proxy-auth header ignored" 401 \
+            -H 'X-authentik-uid: spoof' "$ORIGIN/api/entries"

@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Approval list for the trusted migration runner (fail-closed owner migrations).
+#
+# Format: one "<migration-tag> <sha256-of-the-sql-file>" per line.
+#   * '#' starts a comment; blank lines are ignored.
+#   * The runner refuses ANY migration whose tag is missing here, and refuses a
+#     tag whose content hash differs. Owner rights therefore only ever execute
+#     SQL that a human approved by exact content.
+#
+# Install target: /usr/local/libexec/studio-deploy/approved-migrations/<slug>.txt
+#                 (root-owned, mode 0644; the agent can read, not write)
+#
+# Updating it is an owner step: review the diff of the new migration SQL, then
+# add/adjust the line. `scripts/print-approvals.sh <repo> <slug>` prints the
+# exact lines for a checkout so the review is mechanical.
+#
+# Keep this file free of secrets — it holds only tags and content hashes.
+
+# --- example (replace with the real approved set at install time) ------------
+# 0000_sad_nocturne                 <sha256>
+# 0001_smiling_martin_li            <sha256>
+# 0002_rls_and_grants               <sha256>
+# 0003_revoke_journal_from_runtime  <sha256>
+# 0004_rls_policy_nullif            <sha256>
