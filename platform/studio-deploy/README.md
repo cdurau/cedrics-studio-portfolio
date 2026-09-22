@@ -425,17 +425,21 @@ measured facts bound it, and neither is closed by anything in this directory:
    `<slug>-verify-container` is an honest proof against *Coolify* misreporting a
    deploy, but **not** against an adversary who controls the daemon: container
    labels and health can be forged by anyone who can start containers.
-2. **On the host as measured 2026-09-22, the login uid can become root without a
-   password**, which voids the uid boundary entirely — root reads
-   `/var/studio-deploy/…` regardless of mode. See
-   `the unpublished host-trust review`; this is an
-   **open host-security blocker**, tracked separately from S0-13 because it is a
-   property of the host, not of this code.
+2. ~~**The login uid can become root without a password.**~~ **Remediated
+   2026-09-22** (`a login-user-writable helper` was login-user-writable while a
+   `%login-group` NOPASSWD rule pointed at it; it is now `root:wheel` and the
+   unprivileged re-run of `the host sudo-target check` returns PASS).
+   Until that fix, root read `/var/studio-deploy/…` regardless of mode and the
+   uid boundary was void. Full before/after evidence:
+   `the unpublished host-trust review` §H-1.5.
+   Re-run that script after any `brew upgrade` — a package update can restore a
+   bad ownership.
 
-Blocker 2 must be remediated, and blocker 1 must be understood and accepted (or
-removed by moving the coding agent off the login account), **before** the
+Blocker 1 remains, and must be understood and accepted — or removed by moving
+the coding agent off the login account
+(`the unpublished agent-migration review`) — **before** the
 installation steps below are worth running. Until then, installing this raises
-the bar against accident and against a weak attacker — it does not establish the
+the bar against accident and against a weak attacker; it does not establish the
 boundary the design language implies.
 
 Smaller residuals: the deploy user can still invoke its two argument-free helpers
