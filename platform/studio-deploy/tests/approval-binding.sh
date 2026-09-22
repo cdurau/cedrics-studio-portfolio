@@ -176,8 +176,11 @@ STATE="$WORK/state"
 mkdir -p "$TRUST/approved-migrations" "$STATE"
 APPROVALS="$TRUST/approved-migrations/$SLUG.txt"
 
-# A runner stub: reaching it proves the gate got past its preflight, including the
-# commit binding. It logs and exits non-zero so the run stops there deterministically.
+# Runner and container-facts stubs: reaching the runner proves the gate got past
+# its preflight, including the commit binding. It logs and exits non-zero so the
+# run stops there deterministically. The gate's preflight requires BOTH trusted
+# helpers to exist (S0-13: the verification step now goes through the root-owned
+# verify-container helper), so that one is staged too.
 RUNNER_LOG="$WORK/runner.log"
 : > "$RUNNER_LOG"
 RUNNER="$TRUST/$SLUG-migrate-runner"
@@ -187,6 +190,15 @@ printf 'RUNNER-INVOKED args=%s\n' "\$#" >> "$RUNNER_LOG"
 exit 1
 STUB
 chmod 755 "$RUNNER"
+
+VERIFY_CONTAINER="$TRUST/$SLUG-verify-container"
+cat > "$VERIFY_CONTAINER" <<'STUB'
+#!/usr/bin/env bash
+# Never reached in these cases (the runner stub fails first); present so the
+# gate's component-existence preflight can pass.
+exit 0
+STUB
+chmod 755 "$VERIFY_CONTAINER"
 
 printf '%s\n' "bo95tvgzq7mkhjx0syelwir5" > "$STATE/coolify_uuid.txt"
 printf 'MIGRATION_DATABASE_URL=postgresql://owner:***@127.0.0.1:5432/db\n' > "$STATE/migrate.env"

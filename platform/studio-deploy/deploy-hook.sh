@@ -29,19 +29,24 @@
 #
 # (finding B) `no-user-rc` / `restrict`: with only no-pty,no-port-forwarding,
 # no-agent-forwarding,no-X11-forwarding, sshd still executes ~/.ssh/rc before the
-# forced command if that file exists. On the host the login account is the same
-# uid that runs the runtime repo and the agent processes, so ~/.ssh/rc is a path
-# an agent can create and get executed next to the deploy credential. The
-# documented entry therefore uses `restrict`, which disables port/agent/X11
-# forwarding, PTY allocation AND ~/.ssh/rc — and, per sshd(8), any future
-# restriction capability added to authorized_keys. `no-user-rc` is the narrower
-# equivalent if forwarding options are wanted individually.
+# forced command if that file exists. Under the dedicated-deploy-user model this
+# hook is the deploy user's forced command, so ~/.ssh/rc would be `studio-deploy`'s
+# own file — the login-account problem the earlier revision had is gone, and
+# `restrict` remains the documented entry because it also covers any future
+# restriction capability sshd adds to authorized_keys.
+#
+# (S0-13) THIS HOOK RUNS AS THE DEDICATED DEPLOY USER. Its uid is the boundary:
+# the deploy credential, the token and the clone belong to `studio-deploy`, so the
+# coding agent (a different uid) cannot read them even though it can read this
+# file. A copy invoked as the login user would undo exactly that, so the hook
+# refuses to run as any account other than the installed DEPLOY_USER.
 set -euo pipefail
 
 # --- the literal production trust path (substituted once at install) ---------
 SLUG="__APP_SLUG__"
 TRUST_DIR="__TRUST_DIR__"
 GATE_REPO="__GATE_REPO__"
+DEPLOY_USER="__DEPLOY_USER__"
 
 DEFAULT_TRUST_DIR="/usr/local/libexec/studio-deploy"
 GATE="$TRUST_DIR/${SLUG}-deploy-gate"
@@ -49,9 +54,22 @@ GATE_REF="migration/coolify-v5"
 
 msg() { printf '[deploy-hook] %s\n' "$*" >&2; }
 
-case "$SLUG$TRUST_DIR$GATE_REPO" in
+case "$SLUG$TRUST_DIR$GATE_REPO$DEPLOY_USER" in
   *__*) msg "refused: unsubstituted placeholder — this is the canonical source, not an installed component"; exit 2 ;;
 esac
+
+# --- the hook's own identity -------------------------------------------------
+# The hook is installed as the deploy account's forced command; running it as any
+# other account means the session did not arrive the way this component was
+# installed for, so it refuses rather than acting with the wrong user's files.
+# The identity is the ACCOUNT NAME — the uid is resolved by the OS and is not
+# hard-coded anywhere, so an install-time uid choice cannot stale this check.
+case "$DEPLOY_USER" in
+  "" | *[!0-9a-zA-Z_.-]*) msg "refused: DEPLOY_USER is not a plausible account name in the installed hook"; exit 2 ;;
+esac
+SELF_USER="$(id -un)"
+[ "$SELF_USER" = "$DEPLOY_USER" ] \
+  || { msg "refused: running as user '$SELF_USER', this hook is installed for the deploy account '$DEPLOY_USER'"; exit 2; }
 
 # SSH_ORIGINAL_COMMAND is attacker-controlled input: validate before anything
 # uses it, and exit on the spot. Exactly 40 lowercase hex characters, nothing

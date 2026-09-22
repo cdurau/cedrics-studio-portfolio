@@ -71,7 +71,12 @@ case "$cmd" in
     c_image="$(f 4)"; c_commit="$(f 5)"; c_health="$(f 6)"
     case "$tmpl" in
       *State.Health.Status*)
-        printf '%s|%s|%s|%s|%s\n' "$c_health" "$c_image" "$c_commit" "$(f 2)" "$(f 3)" ;;
+        # Faithful to the real thing: the helpers ask for TAB-separated fields
+        # (`{{"\t"}}`), so the stand-in emits tabs. Emitting pipes here would
+        # make the gate's parser see one field and silently mis-bind, which is
+        # exactly the class of wrong-but-plausible result these suites exist to
+        # catch.
+        printf '%s\t%s\t%s\t%s\t%s\n' "$c_health" "$c_image" "$c_commit" "$(f 2)" "$(f 3)" ;;
       *) printf '%s\n' "$c_health" ;;
     esac
     ;;

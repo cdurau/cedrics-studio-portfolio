@@ -6,6 +6,7 @@
 #
 # Gate review 2026-09-20, SECOND round — finding 1 (KRITISCH), 2/3/7 (HOCH/KLEIN).
 # Gate review 2026-09-21, THIRD round  — finding A (KRITISCH/HOCH), C (HOCH/MITTEL).
+# S0-13 (2026-09-22)                   — dedicated deploy user.
 #
 # WHY THIS FILE IS NO LONGER IN THE RUNTIME REPO
 # ---------------------------------------------
@@ -16,6 +17,29 @@
 # now lives under /usr/local/libexec/ (root-owned, mode 0755): the agent may read
 # and execute it, and cannot change it with a runtime-repo commit. The runtime
 # repo is demoted to build/source input.
+#
+# THIS GATE RUNS AS THE DEDICATED DEPLOY USER AND HOLDS NO DOCKER ACCESS
+# ---------------------------------------------------------------------
+# S0-13, the dedicated-deploy-user model. The gate's uid is the forced command's
+# uid — the hidden service account `studio-deploy`, NOT the login user the coding
+# agent runs as. That is what separates the deploy credential from the agent: the
+# agent's processes are a different uid, so mode-600 files owned by the deploy
+# user are unreadable to them. The gate refuses to run at all if its effective
+# account is not the installed DEPLOY_USER, so a copy invoked as the login user
+# cannot silently act with the agent's identity. The identity is the account NAME:
+# the numeric uid is whatever the OS assigned at install time and is never
+# hard-coded, so installing with a different free uid cannot stale this check.
+#
+# The gate itself never touches the Docker socket. On this host the socket is
+# `login-user:login-group` mode 600, so reaching it here would hand the gate the login
+# user's authority and undo the separation. Instead exactly two operations are
+# delegated through `sudo -n` to root-owned, ARGUMENT-FREE helpers:
+#   * <slug>-migrate-runner   — the ONE Docker write (the owner migration)
+#   * <slug>-verify-container — READ-ONLY container ps/inspect, facts only
+# Both are pinned in /etc/sudoers.d with the empty-argument form, so argv is
+# refused by sudo itself. The binding decisions (which commit, which app, which
+# health) stay HERE; the helper only reports facts, which is why it needs no
+# arguments and why the deploy user cannot launder one through it.
 #
 # THE PRODUCTION TRUST PATH IS LITERAL (third round, finding A)
 # ------------------------------------------------------------
@@ -29,20 +53,16 @@
 # consulted for any security-relevant decision. An override is not honoured, and
 # the run says so out loud instead of silently ignoring it.
 #
-# The test suites never exercise this file. They exercise a *substituted copy*
-# (tests/lib/subst.sh), so test injection cannot be activated on the production
-# path by any caller, env var or flag.
-#
 # WHAT IT DOES (deploy mode) — fail-closed at every step
 #   1. bind the requested commit to the allowed ref (tip equality, see below)
 #   2. require the owner's approval list to be bound to that same commit
-#   3. migrate through the TRUSTED migration runner, which may only apply
-#      migration files whose exact content hash the operator approved, and which
-#      runs no agent build at all
+#   3. migrate through the TRUSTED migration runner (sudo, no arguments), which
+#      may only apply migration files whose exact content hash the operator
+#      approved, and which runs no agent build at all
 #   4. trigger the Coolify deploy only AFTER a successful migration
 #   5. poll the deployment UUID to a terminal state (bounded)
 #   6. verify that a healthy container bound to THIS APP and built from the FULL
-#      expected commit is serving
+#      expected commit is serving (via the read-only helper)
 #
 # Modes are arguments, never environment variables:
 #   deploy-gate.sh <full-40-char-commit-sha>            full deploy
@@ -60,7 +80,8 @@ SLUG="__APP_SLUG__"
 TRUST_DIR="__TRUST_DIR__"
 STATE_DIR="__STATE_DIR__"
 GATE_REPO="__GATE_REPO__"
-DOCKER_BIN="__DOCKER_BIN__"
+DEPLOY_USER="__DEPLOY_USER__"
+SUDO_BIN="__SUDO_BIN__"
 DEPLOY_TIMEOUT="__DEPLOY_TIMEOUT__"
 HEALTH_TIMEOUT="__HEALTH_TIMEOUT__"
 POLL_INTERVAL="__POLL_INTERVAL__"
@@ -69,9 +90,9 @@ COOLIFY_API="__COOLIFY_API__"
 # Fixed constants. Not overridable, not derived from the caller.
 DEFAULT_TRUST_DIR="/usr/local/libexec/studio-deploy"
 GATE_REF="migration/coolify-v5"
-DOCKER_CONTEXT="devbox"
 
 MIGRATE_RUNNER="$TRUST_DIR/${SLUG}-migrate-runner"
+VERIFY_CONTAINER="$TRUST_DIR/${SLUG}-verify-container"
 APPROVALS_FILE="$TRUST_DIR/approved-migrations/${SLUG}.txt"
 MIGRATE_ENV="$STATE_DIR/migrate.env"
 APP_UUID_FILE="$STATE_DIR/coolify_uuid.txt"
@@ -84,9 +105,27 @@ die() { printf '[deploy-gate] FAIL: %s\n' "$*" >&2; exit 1; }
 # A source file that still carries a placeholder was never installed properly.
 # Refusing is the only safe reading: a placeholder TRUST_DIR silently means
 # "not the production trust root".
-case "$SLUG$TRUST_DIR$STATE_DIR$GATE_REPO$DOCKER_BIN$COOLIFY_API" in
+case "$SLUG$TRUST_DIR$STATE_DIR$GATE_REPO$DEPLOY_USER$SUDO_BIN$COOLIFY_API" in
   *__*) die "unsubstituted placeholder in the installed gate — this is the canonical source, not an installed component (see platform/studio-deploy/README.md)" ;;
 esac
+
+# --- the gate's own identity -------------------------------------------------
+# The identity is the ACCOUNT NAME, not a number. The uid is resolved by the OS at
+# install time and can differ from any value written in a document, so the name is
+# what stays true; nothing here hard-codes a numeric uid. Ownership is compared
+# against the uid this process actually is (below), so the check is uid-agnostic.
+#
+# The authority this gate exercises is the DEPLOY USER's, so running it as any
+# other account is a configuration error and not something to work around: a copy
+# invoked as the login user would read the login user's state directory and act
+# with the agent's identity, which is the separation this model removes.
+case "$DEPLOY_USER" in
+  "" | *[!0-9a-zA-Z_.-]*) die "DEPLOY_USER is not a plausible account name in the installed gate" ;;
+esac
+SELF_USER="$(id -un)"
+[ "$SELF_USER" = "$DEPLOY_USER" ] \
+  || die "refusing to run as user '$SELF_USER' — this gate is installed for the deploy account '$DEPLOY_USER'"
+SELF_UID="$(id -u)"
 
 # Deterministic tool resolution and a home directory from the OS, never from the
 # caller's environment. git is additionally pinned to the system config so a
@@ -112,7 +151,7 @@ export HOME
 
 # Environment overrides are ignored, and that is reported rather than hidden:
 # "nothing happened" must not be confusable with "the override worked".
-OVERRIDE_NAMES="APP_SLUG TRUST_DIR MIGRATE_RUNNER APPROVALS_FILE PSQL_IMAGE DOCKER_BIN DOCKER_CONTEXT DB_NETWORK STATE_DIR GATE_REPO GATE_REF COOLIFY_API VERIFY_ONLY REF_CHECK_ONLY DEPLOY_TIMEOUT HEALTH_TIMEOUT POLL_INTERVAL"
+OVERRIDE_NAMES="APP_SLUG TRUST_DIR MIGRATE_RUNNER VERIFY_CONTAINER APPROVALS_FILE PSQL_IMAGE DOCKER_BIN DOCKER_CONTEXT DB_NETWORK STATE_DIR GATE_REPO GATE_REF COOLIFY_API VERIFY_ONLY REF_CHECK_ONLY DEPLOY_TIMEOUT HEALTH_TIMEOUT POLL_INTERVAL DEPLOY_USER SUDO_BIN"
 seen=""
 for n in $OVERRIDE_NAMES; do
   case "${!n:-}" in
@@ -128,14 +167,6 @@ fi
 json() { jq -r "$1 // empty" 2>/dev/null; }
 file_mode() { stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1"; }
 file_owner() { stat -f '%u' "$1" 2>/dev/null || stat -c '%u' "$1"; }
-
-# Docker goes through a function, never through a string that has to be
-# word-split: "$DOCKER inspect ..." inside a command substitution silently became
-# a single command word and reported every container as absent, which would have
-# turned a real failure into a wrong-but-plausible message.
-d() {
-  "$DOCKER_BIN" --context "$DOCKER_CONTEXT" "$@"
-}
 
 # --- 0. mode and the requested commit, validated before anything uses them ---
 MODE="deploy"
@@ -214,7 +245,7 @@ else
   # that is the whole point, and a non-root-owned gate is not the boundary the
   # hook claims. TRUST_DIR is a literal, so "non-default" can only mean an
   # uninstalled/test copy — never a production run someone steered.
-  for f in "$MIGRATE_RUNNER" "$APPROVALS_FILE"; do
+  for f in "$MIGRATE_RUNNER" "$VERIFY_CONTAINER" "$APPROVALS_FILE"; do
     [ -e "$f" ] || die "missing trusted component $f (see platform/studio-deploy/README.md — installation is an owner step)"
     perms="$(file_mode "$f")"
     case "$perms" in
@@ -227,10 +258,17 @@ else
       log "non-default TRUST_DIR=$TRUST_DIR — ownership check relaxed (group/other-write still refused)"
     fi
   done
+  # The state directory belongs to the deploy user: its files must be owned by the
+  # uid this gate runs as, not merely mode-600. A 600 file owned by another uid is
+  # either unreadable (and then the run must fail loudly) or, worse, a hint that
+  # the state was moved from a different account without re-owning it.
   for f in "$MIGRATE_ENV" "$APP_UUID_FILE" "$TOKEN_FILE"; do
-    [ -r "$f" ] || die "missing state file $f"
+    [ -r "$f" ] || die "missing or unreadable state file $f"
     perms="$(file_mode "$f")"
     [ "$perms" = "600" ] || die "$f has mode $perms, expected 600"
+    owner="$(file_owner "$f")"
+    [ "$owner" = "$SELF_UID" ] \
+      || die "$f is owned by uid $owner but this gate runs as uid $SELF_UID — the deploy state must belong to the deploy user"
   done
   APP_UUID="$(tr -d '[:space:]' < "$APP_UUID_FILE")"
   [ -n "$APP_UUID" ] || die "app identity file $APP_UUID_FILE is empty"
@@ -271,24 +309,30 @@ api() { # api <method> <path> [curl args...]
 #   * coolify.applicationId label == the app id, when one is on file
 #   * image tag or coolify.commit label carries the full expected SHA
 #   * container health is "healthy"
+#
+# The docker facts come from the root-owned READ-ONLY helper, called through
+# sudo with NO arguments. The binding below is deliberately kept here, in the
+# gate — a helper that returned a verdict would need the expected SHA as an
+# argument, and an argument is exactly what the deploy user could launder.
 verify_target_app() {
   log "verifying a healthy container for app $APP_UUID at $EXPECTED_SHA"
   local deadline=$(( $(date +%s) + HEALTH_TIMEOUT ))
-  local found="" names c info health image commit label_name label_appid last=""
+  local found="" line c health image commit label_name label_appid rest last=""
   while [ "$(date +%s)" -lt "$deadline" ]; do
     found=""
-    names="$(d ps --filter "label=coolify.name=$APP_UUID" --format '{{.Names}}' 2>/dev/null || true)"
-    for c in $names; do
-      [ -n "$c" ] || continue
-      info="$(d inspect -f '{{.State.Health.Status}}|{{.Config.Image}}|{{index .Config.Labels "coolify.commit"}}|{{index .Config.Labels "coolify.name"}}|{{index .Config.Labels "coolify.applicationId"}}' "$c" 2>/dev/null || echo 'unknown||||')"
-      # Split on '|' without `read` and without a temporary IFS: empty labels are
-      # meaningful here (a container may carry no commit label) and tab/newline
-      # IFS handling otherwise shifts the fields.
-      health="${info%%|*}"; info="${info#*|}"
-      image="${info%%|*}";  info="${info#*|}"
-      commit="${info%%|*}"; info="${info#*|}"
-      label_name="${info%%|*}"; info="${info#*|}"
-      label_appid="$info"
+    if ! listing="$("$SUDO_BIN" -n "$VERIFY_CONTAINER" 2>/dev/null)"; then
+      listing=""
+      last="the container-facts helper did not return a listing"
+    fi
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      # "<name>\t<health>\t<image>\t<commit>\t<name-label>\t<appid-label>"
+      c="${line%%$'\t'*}";        rest="${line#*$'\t'}"
+      health="${rest%%$'\t'*}";   rest="${rest#*$'\t'}"
+      image="${rest%%$'\t'*}";    rest="${rest#*$'\t'}"
+      commit="${rest%%$'\t'*}";   rest="${rest#*$'\t'}"
+      label_name="${rest%%$'\t'*}"; rest="${rest#*$'\t'}"
+      label_appid="$rest"
       # App binding: the UUID label must match, and so must the numeric id when
       # the operator put one on file.
       [ "$label_name" = "$APP_UUID" ] || continue
@@ -301,7 +345,9 @@ verify_target_app() {
       if [ "$health" != "healthy" ]; then last="container $c health: $health"; continue; fi
       found="$c"
       break
-    done
+    done <<EOF
+$listing
+EOF
     if [ -n "$found" ]; then
       log "container $found is app $APP_UUID, built from $EXPECTED_SHA, healthy"
       return 0
@@ -338,13 +384,15 @@ MIG_DIR="$GATE_REPO/apps/$SLUG/drizzle/migrations"
 
 # --- 3. owner migration through the TRUSTED runner --------------------------
 #
-# This gate never reads the owner credential and never builds an image from the
-# checkout. The runner is root-owned, needs no agent build (pinned psql image),
-# and refuses every migration file whose content hash the operator has not
-# approved. A new migration therefore does not run with owner rights until a
-# human has approved it — fail-closed, which is the point.
-log "running owner migration through the trusted runner (approval-gated)"
-/bin/bash "$MIGRATE_RUNNER" "$MIG_DIR" "$MIGRATE_ENV" "$APPROVALS_FILE" \
+# This gate never reads the owner credential, never builds an image from the
+# checkout and never talks to Docker. The runner is root-owned, is reached
+# through `sudo -n` with NO arguments (so argv is refused by sudo before the
+# script runs), takes every path from literals, needs no agent build (pinned psql
+# image), and refuses every migration file whose content hash the operator has
+# not approved. The runner additionally re-checks on its own that the clone's
+# HEAD is the commit the approval list names.
+log "running owner migration through the trusted runner (approval-gated, sudo, no arguments)"
+"$SUDO_BIN" -n "$MIGRATE_RUNNER" \
   || die "migration failed or was not approved — NOT triggering a deploy (the old server keeps running against the old schema)"
 log "migration ok"
 

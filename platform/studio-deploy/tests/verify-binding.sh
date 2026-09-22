@@ -14,6 +14,12 @@
 # Third round (finding A): the suite runs a SUBSTITUTED COPY of the gate built by
 # tests/lib/harness.sh, not the canonical script with STATE_DIR/TRUST_DIR exported.
 #
+# S0-13: the gate no longer talks to Docker at all. It reaches a root-owned,
+# ARGUMENT-FREE helper through `sudo -n` and does the binding itself. This suite
+# therefore stages that helper (the real verify-container script, with the docker
+# stand-in substituted for DOCKER_BIN) and a sudo stand-in — so the call shape,
+# the argument-free contract and the binding are all really exercised.
+#
 #   A) target app, full commit, healthy               -> PASS
 #   B) same commit but a DIFFERENT app                -> FAIL (the false-green)
 #   C) target app but a different commit              -> FAIL
@@ -32,19 +38,21 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=tests/lib/harness.sh
 . "$HERE/lib/harness.sh"
+# shellcheck source=tests/lib/agent-stubs.sh
+. "$HERE/lib/agent-stubs.sh"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 fail=0
 
-# The gate execs its docker binary directly. Stage the stand-in as an executable
-# copy: a rewrite of the source file must not be able to turn every case into a
-# vacuous pass (writing a 0600 file made the gate's ps/inspect fail silently and
-# made the FAIL cases "pass" for the wrong reason).
+# The gate runs the root-owned verify-container helper; stage the real script with
+# the docker stand-in substituted in, exactly as the installed component would run
+# it. The stand-in is an executable copy: a rewrite of the source file must not be
+# able to turn every case into a vacuous pass (writing a 0600 file once made the
+# helper's ps/inspect fail silently and made the FAIL cases "pass" for the wrong
+# reason).
 FAKE="$WORK/fake-docker"
-cp "$HERE/fake-docker.sh" "$FAKE"
-chmod 755 "$FAKE"
-[ -x "$FAKE" ] || { echo "could not stage the docker stand-in as executable" >&2; exit 2; }
+stage_docker_stdin "$FAKE"
 
 APP_UUID="bo95tvgzq7mkhjx0syelwir5"
 APP_ID="13"
@@ -74,16 +82,19 @@ mkdir -p "$STATE"
 printf '%s\n' "$APP_UUID" > "$STATE/coolify_uuid.txt"
 printf '%s\n' "$APP_ID"   > "$STATE/coolify_app_id.txt"
 
-# verify mode does not read the trusted runner/approvals; point the substituted
-# gate at an empty trust dir so a regression that starts demanding them is visible.
+# verify mode does not read the trusted runner/approvals; the helper set is staged
+# anyway so a regression that starts demanding them is visible, and so the gate's
+# own component-existence checks are exercised.
 TRUST="$WORK/trust"
 mkdir -p "$TRUST"
+stage_helpers "$TRUST" "$STATE" "$WORK/deploy-clone" "$FAKE" ua-smoke
 
 GATE="$WORK/ua-smoke-deploy-gate"
 build_gate "$GATE" ua-smoke "$TRUST" "$STATE" "$WORK/deploy-clone" "$FAKE" 1 1
 
 run_verify() { # run_verify <sha> — the docker world is injected via the stand-in
-  # FAKE_DOCKER_SCENARIO is a property of the *test double*, not of the gate.
+  # FAKE_DOCKER_SCENARIO is a property of the *test double* the helper runs, not of
+  # the gate: the gate never learns a scenario, it only invokes the helper.
   FAKE_DOCKER_SCENARIO="$SCEN" "$GATE" --verify-only "$1" 2>&1
 }
 

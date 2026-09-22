@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Trusted migration runner — root-owned, installed OUTSIDE any repository.
+# Trusted migration runner — root-owned, argument-FREE.
 #
-# Install target: /usr/local/libexec/studio-deploy/<slug>-migrate-runner
+# Install target: /usr/local/libexec/studio-deploy/<slug>-migrate-runner (root:wheel 0755)
 # Canonical source: platform/studio-deploy/migrate-runner.sh (planning repo)
 #                  Installation is an owner step.
 #
@@ -17,7 +17,7 @@
 # So the runner is trusted and the SQL is data:
 #   * this script is root-owned and outside every repo an agent can write;
 #   * it applies ONLY migration files whose exact content hash the operator has
-#     approved (third argument; see approved-migrations/<slug>.txt);
+#     approved (approved-migrations/<slug>.txt);
 #   * it needs no agent build at all — the pinned postgres image provides psql,
 #     so no agent-authored binary ever holds the owner credential.
 #
@@ -27,21 +27,27 @@
 # container. That makes every path and image it uses part of the credential
 # path: if PSQL_IMAGE, DOCKER_BIN or DOCKER_CONTEXT could be set by an untrusted
 # caller, agent-controlled code would get the owner credential back. They are
-# therefore literals, and the *arguments* are pinned too: the runner only acts
-# when it is called with the exact production paths it was installed for, so a
-# direct call with an attacker-chosen env-file or approvals list is refused
-# before any credential is read.
+# therefore literals.
 #
-# Order is deliberate: every journal entry is validated and every hash compared
-# against the approval list BEFORE the first byte reaches the database. A
-# rejected set therefore cannot have touched anything.
+# ARGUMENT-FREE (S0-13, dedicated-deploy-user model)
+# --------------------------------------------------
+# This helper is invoked as ROOT, via sudo, from the deploy gate — which runs as
+# the dedicated deploy user. The sudoers entry uses the empty-argument form
+# (`... <slug>-migrate-runner ""`, sudoers(5): "the command may only be run with
+# no arguments"), so sudo refuses any argv before this script is reached.
 #
-# Usage: <slug>-migrate-runner <migrations-dir> <owner-env-file> <approvals-file>
-#   <migrations-dir>  the "drizzle/migrations" tree of the requested commit,
-#                     below the installed clone
-#   <owner-env-file>  mode-600 file on this host containing MIGRATION_DATABASE_URL
-#   <approvals-file>  root-owned list of approved migrations, "<tag> <sha256>"
-#                     per line ('#' comments and blanks ignored)
+# The previous version took three arguments (migrations dir, env-file, approvals
+# file) and pinned their shapes. Removing the arguments is strictly stronger: a
+# caller who can execute this file — including the deploy user the gate itself
+# runs as — can no longer pass a path, an image or a tree at all. Every input is
+# now a literal substituted at install time, and the checks below are defence in
+# depth rather than the boundary.
+#
+# Order is deliberate: the WHOLE migration set is validated, and the clone's HEAD
+# is confirmed to be the commit the operator approved, BEFORE the first byte
+# reaches the database. A rejected set therefore cannot have touched anything.
+#
+# Usage: <slug>-migrate-runner            (no arguments)
 #
 # State written: rows in public.__drizzle_migrations (same shape as the app's
 # migrate.ts, so an existing deployment upgrades in place).
@@ -60,6 +66,7 @@ DB_NETWORK="coolify"
 
 EXPECTED_ENV_FILE="$STATE_DIR/migrate.env"
 EXPECTED_APPROVALS_FILE="$TRUST_DIR/approved-migrations/${SLUG}.txt"
+MIG_DIR="$GATE_REPO/apps/$SLUG/drizzle/migrations"
 
 log() { printf '[migrate-runner] %s\n' "$*"; }
 die() { printf '[migrate-runner] FAIL: %s\n' "$*" >&2; exit 1; }
@@ -68,32 +75,24 @@ case "$SLUG$TRUST_DIR$STATE_DIR$GATE_REPO$DOCKER_BIN$PSQL_IMAGE" in
   *__*) die "unsubstituted placeholder in the installed runner — this is the canonical source, not an installed component" ;;
 esac
 
-# Deterministic tool resolution; the system jq/awk are root-owned.
+# --- no arguments, ever -----------------------------------------------------
+# The installed sudoers form already forbids argv; this is the second lock. A
+# caller-chosen env-file, approvals list or tree was the "argument laundering"
+# path into a process that holds the owner credential, and it is gone.
+[ "$#" -eq 0 ] || die "this helper takes no arguments (got $#) — every input is pinned at install time"
+
+# --- deterministic tool resolution ------------------------------------------
 PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 export PATH
 
-MIG_DIR="${1:-}"
-ENV_FILE="${2:-}"
-APPROVALS="${3:-}"
+ENV_FILE="$EXPECTED_ENV_FILE"
+APPROVALS="$EXPECTED_APPROVALS_FILE"
 
-USAGE="usage: $0 <migrations-dir> <owner-env-file> <approvals-file>"
-[ -n "$MIG_DIR" ] && [ -d "$MIG_DIR" ] || { echo "$USAGE" >&2; exit 2; }
-[ -n "$ENV_FILE" ] && [ -r "$ENV_FILE" ] || { echo "$USAGE" >&2; exit 2; }
-[ -n "$APPROVALS" ] && [ -r "$APPROVALS" ] || { echo "$USAGE" >&2; exit 2; }
-[ "$#" -eq 3 ] || die "expected exactly three arguments, got $#"
-
-# --- call-shape pinning: only the production paths are acted on -------------
-# A direct call with a caller-chosen state or approvals path is refused. This
-# removes the "invoke the trusted runner as an argument-laundering step" path
-# even for a caller that can execute the file.
-[ "$ENV_FILE" = "$EXPECTED_ENV_FILE" ] \
-  || die "refusing owner env-file '$ENV_FILE' — the runner only reads its installed path $EXPECTED_ENV_FILE"
-[ "$APPROVALS" = "$EXPECTED_APPROVALS_FILE" ] \
-  || die "refusing approvals list '$APPROVALS' — the runner only reads its installed path $EXPECTED_APPROVALS_FILE"
-case "$MIG_DIR" in
-  "$GATE_REPO"/*) : ;;
-  *) die "refusing migrations dir '$MIG_DIR' — it is not below the installed clone $GATE_REPO" ;;
-esac
+# The installed paths must exist before anything else is attempted. These are
+# literals, so a missing path is an installation defect, not a caller mistake.
+[ -d "$MIG_DIR" ] || die "no migrations directory $MIG_DIR in the installed clone"
+[ -r "$ENV_FILE" ] || die "missing owner env-file $ENV_FILE"
+[ -r "$APPROVALS" ] || die "missing approvals list $APPROVALS"
 
 JOURNAL="$MIG_DIR/meta/_journal.json"
 [ -r "$JOURNAL" ] || die "missing migration journal at $JOURNAL"
@@ -102,6 +101,30 @@ command -v jq >/dev/null 2>&1 || die "jq is required to read the migration journ
 digest() { # digest <file>
   shasum -a 256 "$1" | awk '{print $1}'
 }
+
+# --- phase 0: the clone's HEAD must be the commit the operator approved ------
+# The gate checks out the requested commit and binds it to the allowed ref before
+# calling this runner. This is the runner's OWN, independent check that the tree
+# it is about to read is the commit the root-owned approvals file names — so a
+# swap of the clone between the gate's checkout and this call is caught here, and
+# the migration content that runs with owner rights is tied to one reviewed
+# commit.
+HEAD_SHA="$(git -C "$GATE_REPO" rev-parse --verify --quiet 'HEAD^{commit}' || true)"
+[ -n "$HEAD_SHA" ] || die "could not resolve HEAD in $GATE_REPO"
+case "$HEAD_SHA" in
+  "" | *[!0-9a-f]*) die "HEAD in $GATE_REPO is not a lowercase hex sha" ;;
+esac
+[ "${#HEAD_SHA}" -eq 40 ] || die "HEAD in $GATE_REPO is not a full 40-character sha"
+
+approvals_commit="$(awk '$1=="#" && $2=="commit" {print $3; exit}' "$APPROVALS" 2>/dev/null || true)"
+[ -n "$approvals_commit" ] || die "$APPROVALS carries no '# commit <sha>' line — refusing to run unreviewed SQL with owner rights"
+[ "${#approvals_commit}" -eq 40 ] || die "the '# commit' line in $APPROVALS is not a full 40-character sha"
+case "$approvals_commit" in
+  *[!0-9a-f]*) die "the '# commit' line in $APPROVALS is not a lowercase hex sha" ;;
+esac
+[ "$HEAD_SHA" = "$approvals_commit" ] \
+  || die "the installed clone is at $HEAD_SHA but the approved migration set is bound to $approvals_commit — refusing (see platform/studio-deploy/README.md)"
+log "clone HEAD $HEAD_SHA matches the approved commit"
 
 # --- phase 1: validate the whole set before anything touches the database ----
 
