@@ -51,6 +51,48 @@ APP_ID_FILE="$STATE_DIR/coolify_app_id.txt"
 
 die() { printf '[verify-container] FAIL: %s\n' "$*" >&2; exit 1; }
 
+# --- trusted-path predicates (lstat-correct, symlink-free) ------------------
+# `stat` uses lstat semantics: it measures the SYMLINK, not the file that is
+# actually opened or executed. That made the previous ownership check
+# bypassable on this very host — /usr/local/bin/docker is a root:wheel symlink
+# whose payload lives in /Applications/Docker.app and is owned by the LOGIN
+# USER, so `stat -f '%u'` returned 0 ("root-owned, trusted") while root would
+# have executed an agent-writable binary. Measured 2026-09-22.
+#
+# Two independent corrections, because neither alone is the property wanted:
+#   1. a trusted path must not BE a symlink — refused outright, there is no
+#      legitimate reason for one on an installed trust path; and
+#   2. every check uses `stat -L`, so if a link ever does appear, the property
+#      measured is the one that decides what actually runs.
+file_mode()  { stat -L -f '%Lp' "$1" 2>/dev/null || stat -L -c '%a' "$1"; }
+file_owner() { stat -L -f '%u'  "$1" 2>/dev/null || stat -L -c '%u'  "$1"; }
+
+# Ownership of the FILE is not enough: a root-owned file inside a directory the
+# agent can write can be replaced wholesale (unlink + create), so the guarantee
+# has to cover the whole chain from `/` down — every component root-owned and
+# never group/other-writable. The same rule applies to the host's sudoers
+# targets; see the unpublished host-trust review.
+assert_trusted_path() { # assert_trusted_path <absolute path>
+  local p="$1" owner mode
+  case "$p" in
+    /*) : ;;
+    *) die "trusted path must be absolute: $p" ;;
+  esac
+  while : ; do
+    [ ! -h "$p" ] || die "$p is a symlink — a trusted path must not be one"
+    owner="$(file_owner "$p")"
+    mode="$(file_mode "$p")"
+    [ "$owner" = "0" ] \
+      || die "$p is owned by uid $owner, expected root — the trusted path is replaceable"
+    case "$mode" in
+      *[2367]|*[2367]?) die "$p has mode $mode — must not be writable by group/other" ;;
+    esac
+    [ "$p" != "/" ] || break
+    p="${p%/*}"
+    [ -n "$p" ] || p="/"
+  done
+}
+
 # A source file that still carries a placeholder was never installed properly.
 case "$SLUG$TRUST_DIR$STATE_DIR$DOCKER_BIN" in
   *__*) die "unsubstituted placeholder — this is the canonical source, not an installed component" ;;
@@ -70,25 +112,41 @@ PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 export PATH
 
 # A docker binary that is writable by a non-root user is not a trusted binary:
-# replacing it would replace what this helper runs as root. On this host
-# /usr/bin/docker is owned by the login user, which is exactly why the
-# literal is not allowed to be one — refuse loudly instead of running it.
+# replacing it would replace what this helper runs as root. MEASURED on this
+# host (2026-09-22), neither installed docker CLI qualifies:
+#   /usr/bin/docker  -> symlink, owned by the login user
+#   /usr/local/bin/docker     -> root:wheel SYMLINK into /Applications/Docker.app,
+#                                whose payload is owned by the login user and writable
+# The second one is why the check below is not merely an ownership test: the old
+# `stat -f '%u'` measured the link (uid 0) and PASSED, while root would have
+# executed a login-user-writable binary. Hence the README pins a root-owned COPY
+# installed under the trust directory, and the checks here refuse a symlink
+# outright and use `stat -L`.
 #
-# Ownership is enforced on the PRODUCTION path (TRUST_DIR at its literal default),
-# for the same reason the gate relaxes its component-ownership check there: the
-# offline suites run without root and cannot stage a root-owned stand-in, so
-# root-ownership is an install-time property that only the installed layout can
-# assert. Group/other-WRITE is refused unconditionally, because that is a real
-# property of any file the suite can build.
+# The full path-chain and root-ownership assertion runs on the PRODUCTION path
+# (TRUST_DIR at its literal default), for the same reason the gate relaxes its
+# component-ownership check there: the offline suites run without root and
+# cannot stage a root-owned stand-in. The symlink refusal and the group/other-
+# WRITE refusal are unconditional, because those are real properties of any file
+# the suite can build.
 [ -x "$DOCKER_BIN" ] || die "no docker binary at $DOCKER_BIN"
-owner="$(stat -f '%u' "$DOCKER_BIN" 2>/dev/null || stat -c '%u' "$DOCKER_BIN")"
-if [ "$TRUST_DIR" = "$DEFAULT_TRUST_DIR" ]; then
-  [ "$owner" = "0" ] || die "$DOCKER_BIN is owned by uid $owner, expected root — refusing to execute a replaceable binary as root"
-fi
-perms="$(stat -f '%Lp' "$DOCKER_BIN" 2>/dev/null || stat -c '%a' "$DOCKER_BIN")"
+
+# Unconditional, production path or not: a symlinked trusted binary is refused,
+# because that is precisely the shape that defeated the previous check. Neither
+# docker CLI on this host qualifies as a trusted binary on its own — the
+# Homebrew one is login-user-owned, and the /usr/local one is a root symlink to
+# a login-user-owned payload — so the README pins a ROOT-OWNED COPY installed
+# under the trust directory instead.
+[ ! -h "$DOCKER_BIN" ] \
+  || die "$DOCKER_BIN is a symlink — pin the root-owned copy under $DEFAULT_TRUST_DIR (see the DOCKER_BIN section of the README)"
+perms="$(file_mode "$DOCKER_BIN")"
 case "$perms" in
   *[2367]|*[2367]?) die "$DOCKER_BIN has mode $perms — must not be writable by group/other" ;;
 esac
+if [ "$TRUST_DIR" = "$DEFAULT_TRUST_DIR" ]; then
+  # Production path: the whole chain, not merely the last element.
+  assert_trusted_path "$DOCKER_BIN"
+fi
 
 # --- the pinned app identity ------------------------------------------------
 [ -r "$APP_UUID_FILE" ] || die "missing app identity file $APP_UUID_FILE"

@@ -102,6 +102,49 @@ TOKEN_FILE="$STATE_DIR/coolify_token"
 log() { printf '[deploy-gate %s] %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
 die() { printf '[deploy-gate] FAIL: %s\n' "$*" >&2; exit 1; }
 
+# --- trusted-path predicates (lstat-correct, symlink-free) ------------------
+# `stat` uses lstat semantics: it measures the SYMLINK, not the file that is
+# actually opened or executed. That made the previous ownership check
+# bypassable on this very host — /usr/local/bin/docker is a root:wheel symlink
+# whose payload lives in /Applications/Docker.app and is owned by the LOGIN
+# USER, so `stat -f '%u'` returned 0 ("root-owned, trusted") while root would
+# have executed an agent-writable binary. Measured 2026-09-22.
+#
+# Two independent corrections, because neither alone is the property wanted:
+#   1. a trusted path must not BE a symlink — refused outright, there is no
+#      legitimate reason for one on an installed trust path; and
+#   2. every check uses `stat -L`, so if a link ever does appear, the property
+#      measured is the one that decides what actually runs.
+file_mode()  { stat -L -f '%Lp' "$1" 2>/dev/null || stat -L -c '%a' "$1"; }
+file_owner() { stat -L -f '%u'  "$1" 2>/dev/null || stat -L -c '%u'  "$1"; }
+
+# Ownership of the FILE is not enough: a root-owned file inside a directory the
+# agent can write can be replaced wholesale (unlink + create), so the guarantee
+# has to cover the whole chain from `/` down — every component root-owned and
+# never group/other-writable. The same rule applies to the host's sudoers
+# targets; see the unpublished host-trust review.
+assert_trusted_path() { # assert_trusted_path <absolute path>
+  local p="$1" owner mode
+  case "$p" in
+    /*) : ;;
+    *) die "trusted path must be absolute: $p" ;;
+  esac
+  while : ; do
+    [ ! -h "$p" ] || die "$p is a symlink — a trusted path must not be one"
+    owner="$(file_owner "$p")"
+    mode="$(file_mode "$p")"
+    [ "$owner" = "0" ] \
+      || die "$p is owned by uid $owner, expected root — the trusted path is replaceable"
+    case "$mode" in
+      *[2367]|*[2367]?) die "$p has mode $mode — must not be writable by group/other" ;;
+    esac
+    [ "$p" != "/" ] || break
+    p="${p%/*}"
+    [ -n "$p" ] || p="/"
+  done
+}
+
+
 # A source file that still carries a placeholder was never installed properly.
 # Refusing is the only safe reading: a placeholder TRUST_DIR silently means
 # "not the production trust root".
@@ -165,8 +208,7 @@ if [ -n "$seen" ]; then
 fi
 
 json() { jq -r "$1 // empty" 2>/dev/null; }
-file_mode() { stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1"; }
-file_owner() { stat -f '%u' "$1" 2>/dev/null || stat -c '%u' "$1"; }
+# file_mode/file_owner are defined once, near die(), in their lstat-correct form.
 
 # --- 0. mode and the requested commit, validated before anything uses them ---
 MODE="deploy"
@@ -247,13 +289,19 @@ else
   # uninstalled/test copy — never a production run someone steered.
   for f in "$MIGRATE_RUNNER" "$VERIFY_CONTAINER" "$APPROVALS_FILE"; do
     [ -e "$f" ] || die "missing trusted component $f (see platform/studio-deploy/README.md — installation is an owner step)"
+    # A symlinked component is refused everywhere: `stat` measures the link, so
+    # a root-owned link to an agent-writable file would otherwise pass as
+    # "root-owned". This is the same defect class that was found in the docker
+    # binary check on 2026-09-22.
+    [ ! -h "$f" ] || die "$f is a symlink — a trusted component must be a real root-owned file"
     perms="$(file_mode "$f")"
     case "$perms" in
       *[2367]|*[2367]?) die "$f has mode $perms — must not be writable by group/other" ;;
     esac
     if [ "$TRUST_DIR" = "$DEFAULT_TRUST_DIR" ]; then
-      owner="$(file_owner "$f")"
-      [ "$owner" = "0" ] || die "$f is owned by uid $owner, expected root — refusing to trust it"
+      # Whole chain: a root-owned component inside an agent-writable directory
+      # can be replaced wholesale, so file ownership alone is not the property.
+      assert_trusted_path "$f"
     else
       log "non-default TRUST_DIR=$TRUST_DIR — ownership check relaxed (group/other-write still refused)"
     fi
@@ -264,6 +312,9 @@ else
   # the state was moved from a different account without re-owning it.
   for f in "$MIGRATE_ENV" "$APP_UUID_FILE" "$TOKEN_FILE"; do
     [ -r "$f" ] || die "missing or unreadable state file $f"
+    # Ownership and mode describe the LINK unless the link is refused: a state
+    # file that is a symlink has its content chosen by whoever made the link.
+    [ ! -h "$f" ] || die "$f is a symlink — deploy state must be a real file owned by the deploy user"
     perms="$(file_mode "$f")"
     [ "$perms" = "600" ] || die "$f has mode $perms, expected 600"
     owner="$(file_owner "$f")"

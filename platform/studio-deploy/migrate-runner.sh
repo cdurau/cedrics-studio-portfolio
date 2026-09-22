@@ -63,6 +63,7 @@ DOCKER_BIN="__DOCKER_BIN__"
 PSQL_IMAGE="__PSQL_IMAGE__"
 DOCKER_CONTEXT="devbox"
 DB_NETWORK="coolify"
+DEFAULT_TRUST_DIR="/usr/local/libexec/studio-deploy"
 
 EXPECTED_ENV_FILE="$STATE_DIR/migrate.env"
 EXPECTED_APPROVALS_FILE="$TRUST_DIR/approved-migrations/${SLUG}.txt"
@@ -70,6 +71,49 @@ MIG_DIR="$GATE_REPO/apps/$SLUG/drizzle/migrations"
 
 log() { printf '[migrate-runner] %s\n' "$*"; }
 die() { printf '[migrate-runner] FAIL: %s\n' "$*" >&2; exit 1; }
+
+# --- trusted-path predicates (lstat-correct, symlink-free) ------------------
+# `stat` uses lstat semantics: it measures the SYMLINK, not the file that is
+# actually opened or executed. That made the previous ownership check
+# bypassable on this very host — /usr/local/bin/docker is a root:wheel symlink
+# whose payload lives in /Applications/Docker.app and is owned by the LOGIN
+# USER, so `stat -f '%u'` returned 0 ("root-owned, trusted") while root would
+# have executed an agent-writable binary. Measured 2026-09-22.
+#
+# Two independent corrections, because neither alone is the property wanted:
+#   1. a trusted path must not BE a symlink — refused outright, there is no
+#      legitimate reason for one on an installed trust path; and
+#   2. every check uses `stat -L`, so if a link ever does appear, the property
+#      measured is the one that decides what actually runs.
+file_mode()  { stat -L -f '%Lp' "$1" 2>/dev/null || stat -L -c '%a' "$1"; }
+file_owner() { stat -L -f '%u'  "$1" 2>/dev/null || stat -L -c '%u'  "$1"; }
+
+# Ownership of the FILE is not enough: a root-owned file inside a directory the
+# agent can write can be replaced wholesale (unlink + create), so the guarantee
+# has to cover the whole chain from `/` down — every component root-owned and
+# never group/other-writable. The same rule applies to the host's sudoers
+# targets; see the unpublished host-trust review.
+assert_trusted_path() { # assert_trusted_path <absolute path>
+  local p="$1" owner mode
+  case "$p" in
+    /*) : ;;
+    *) die "trusted path must be absolute: $p" ;;
+  esac
+  while : ; do
+    [ ! -h "$p" ] || die "$p is a symlink — a trusted path must not be one"
+    owner="$(file_owner "$p")"
+    mode="$(file_mode "$p")"
+    [ "$owner" = "0" ] \
+      || die "$p is owned by uid $owner, expected root — the trusted path is replaceable"
+    case "$mode" in
+      *[2367]|*[2367]?) die "$p has mode $mode — must not be writable by group/other" ;;
+    esac
+    [ "$p" != "/" ] || break
+    p="${p%/*}"
+    [ -n "$p" ] || p="/"
+  done
+}
+
 
 case "$SLUG$TRUST_DIR$STATE_DIR$GATE_REPO$DOCKER_BIN$PSQL_IMAGE" in
   *__*) die "unsubstituted placeholder in the installed runner — this is the canonical source, not an installed component" ;;
@@ -87,6 +131,21 @@ export PATH
 
 ENV_FILE="$EXPECTED_ENV_FILE"
 APPROVALS="$EXPECTED_APPROVALS_FILE"
+
+# The docker binary this helper runs AS ROOT must satisfy the same trusted-path
+# rule as the read-only helper. The previous version checked nothing here at
+# all, which was the wrong way round: this is the helper that holds the owner
+# credential and performs the only Docker WRITE.
+[ -x "$DOCKER_BIN" ] || die "no docker binary at $DOCKER_BIN"
+[ ! -h "$DOCKER_BIN" ] \
+  || die "$DOCKER_BIN is a symlink — pin the root-owned copy under $DEFAULT_TRUST_DIR (see the DOCKER_BIN section of the README)"
+perms="$(file_mode "$DOCKER_BIN")"
+case "$perms" in
+  *[2367]|*[2367]?) die "$DOCKER_BIN has mode $perms — must not be writable by group/other" ;;
+esac
+if [ "$TRUST_DIR" = "$DEFAULT_TRUST_DIR" ]; then
+  assert_trusted_path "$DOCKER_BIN"
+fi
 
 # The installed paths must exist before anything else is attempted. These are
 # literals, so a missing path is an installation defect, not a caller mistake.
@@ -163,7 +222,11 @@ log "validated $(printf '%s' "$validated" | grep -c .) migration(s) against the 
 
 # --- phase 2: owner credential, owner-only file on this host ----------------
 
-perms="$(stat -f '%Lp' "$ENV_FILE" 2>/dev/null || stat -c '%a' "$ENV_FILE")"
+# A symlinked credential file would pass a mode check while its CONTENT comes
+# from wherever the link points — i.e. the owner DB URL this helper is about to
+# use could be chosen by whoever could create the link.
+[ ! -h "$ENV_FILE" ] || die "$ENV_FILE is a symlink — the owner credential must be a real file"
+perms="$(file_mode "$ENV_FILE")"
 [ "$perms" = "600" ] || die "$ENV_FILE has mode $perms, expected 600"
 
 set -a

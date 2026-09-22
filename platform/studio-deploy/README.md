@@ -289,7 +289,7 @@ for f in deploy-gate.sh deploy-hook.sh migrate-runner.sh verify-container.sh; do
     -e 's|__GATE_REPO__|/var/studio-deploy/state/ua-smoke/deploy-clone|g' \
     -e 's|__DEPLOY_USER__|studio-deploy|g' \
     -e 's|__SUDO_BIN__|/usr/bin/sudo|g' \
-    -e 's|__DOCKER_BIN__|/usr/bin/docker|g' \
+    -e 's|__DOCKER_BIN__|/usr/local/libexec/studio-deploy/docker|g' \
     -e 's|__PSQL_IMAGE__|postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2|g' \
     -e 's|__COOLIFY_API__|http://localhost:8000/api/v1|g' \
     -e 's|__DEPLOY_TIMEOUT__|900|g' \
@@ -304,6 +304,14 @@ sudo install -m 0755 -o root -g wheel "$SUBST/deploy-gate.sh"       /usr/local/l
 sudo install -m 0755 -o root -g wheel "$SUBST/migrate-runner.sh"    /usr/local/libexec/studio-deploy/ua-smoke-migrate-runner
 sudo install -m 0755 -o root -g wheel "$SUBST/verify-container.sh"  /usr/local/libexec/studio-deploy/ua-smoke-verify-container
 sudo install -m 0755 -o root -g wheel "$SUBST/deploy-hook.sh"       /usr/local/bin/ua-smoke-deploy-hook
+
+# 1a. the root-owned docker copy the helpers execute (see "Choosing __DOCKER_BIN__")
+#     `install` dereferences the symlink and copies the real binary.
+sudo install -m 0755 -o root -g wheel "$(readlink -f /usr/bin/docker)" \
+  /usr/local/libexec/studio-deploy/docker
+#     Confirm the whole chain is root-owned and link-free before relying on it:
+ls -l /usr/local/libexec/studio-deploy/docker
+stat -f '%Su:%Sg %Lp %N' / /usr /usr/local /usr/local/libexec /usr/local/libexec/studio-deploy
 
 # 1b. the two argument-free sudo capabilities for the deploy user
 sudo install -m 0440 -o root -g wheel /tmp/proposed-sudoers /etc/sudoers.d/studio-deploy
@@ -320,17 +328,57 @@ sudo install -m 0644 -o root -g wheel /tmp/proposed.txt \
 #   command="/usr/local/bin/ua-smoke-deploy-hook",restrict ssh-ed25519 AAAA... ci@github
 ```
 
-`__DOCKER_BIN__` is a deliberate choice and should be made explicitly, not left to
-`PATH`: on the host `/usr/local/bin/docker` is a root-owned symlink into
-`Docker.app`, whose payload is **owned by the login user** — so the Homebrew CLI
-at `/usr/bin/docker` is the better default for a trusted component, and
-the pin is recorded here so the decision is visible. The gate resolves its own
-`PATH` and home directory from the OS, so a caller's `PATH`/`HOME` cannot move
-either.
+### Choosing `__DOCKER_BIN__` — install a root-owned copy
 
-The gate refuses to run if a trusted component is missing or is group/other
-writable, and — on the production path (`TRUST_DIR` = the literal default) — if it
-is not root-owned.
+`__DOCKER_BIN__` is what a **root** helper executes, so it is part of the trusted
+computing base and the choice must be explicit, never left to `PATH`. Measured on
+the host (2026-09-22), **neither** installed docker CLI qualifies on its own:
+
+| candidate | measured | verdict |
+| --- | --- | --- |
+| `/usr/bin/docker` | symlink → Cellar, owned by the login user | agent-replaceable |
+| `/usr/local/bin/docker` | `root:wheel` **symlink** → `/Applications/Docker.app/…/docker`, payload owned by the login user, writable | agent-replaceable *through the link* |
+
+The second row is the dangerous one, and it is why the earlier guidance here was
+not enough: `stat` has lstat semantics, so an ownership check on that path
+measures the **link** (uid 0) and passes, while root executes a binary the login
+user can overwrite. An earlier revision of this file recommended the Homebrew CLI
+as "the better default" — that is also wrong, just more visibly: it is
+login-user-owned, so the production-path check refuses it and the helper cannot
+run at all.
+
+**So pin a root-owned copy under the trust directory** (installed in step 1
+below). It is the only option on this host whose whole path chain is root-owned:
+
+```
+__DOCKER_BIN__ = /usr/local/libexec/studio-deploy/docker
+```
+
+The cost is explicit and accepted: a copy does not follow `brew upgrade`, so the
+docker CLI used by the trusted helpers is pinned until the owner re-installs it.
+That is the intended trade — a trusted binary that changes under you when an
+unrelated package updates is not a trusted binary.
+
+Defence in depth, independent of that choice (all four components):
+
+- a trusted path that **is** a symlink is refused outright — there is no
+  legitimate reason for one on an installed trust path;
+- every ownership/mode check uses `stat -L`, so a link that did appear is
+  measured by what actually runs;
+- on the production path the **whole chain** from `/` down is asserted —
+  every component root-owned and never group/other-writable — because a
+  root-owned file inside an agent-writable directory can be replaced wholesale.
+
+The migration runner validates its docker binary the same way. Before
+2026-09-22 it validated it not at all, which was the wrong way round: it is the
+helper that holds the owner DB credential and performs the only Docker WRITE.
+
+The gate resolves its own `PATH` and home directory from the OS, so a caller's
+`PATH`/`HOME` cannot move either.
+
+The gate refuses to run if a trusted component is missing, is a symlink or is
+group/other writable, and — on the production path (`TRUST_DIR` = the literal
+default) — if its path chain is not root-owned.
 
 ## The OS user model this relies on
 
@@ -349,7 +397,7 @@ boundary is only as good as the uids around it.
 | Trusted components | `/usr/local/libexec/studio-deploy/` (root:wheel) — **not yet installed** |
 | Same-uid processes | Node/Python agent processes and the runtime repo run as the same `login-user` |
 | Dedicated `ci`/`deploy` user | none exists yet |
-| Login user's sudo | `(ALL) ALL` with **password required**; NOPASSWD only for narrow devbox/socket_vmnet/route commands |
+| Login user's sudo | `(ALL) ALL` with **password required** — but see the blocker below: one NOPASSWD devbox rule targets a **login-user-writable** binary, so the login uid reaches root without a password |
 
 Target (designed here, not yet created): the deploy path runs as
 `studio-deploy`. Then `migrate.env` and `coolify_token` — mode 600, owned by
@@ -363,11 +411,37 @@ approval hashes) do **not** do is change who can *read* a file owned by the uid
 the agent itself runs as. That is exactly the gap the deploy user closes, and why
 the account is the architectural change rather than another gate check.
 
-Residual, stated honestly: the deploy user can still invoke its two
-argument-free helpers — that is what they are for — and the sudoers
-empty-argument form is a sudo(8) behaviour that the owner must verify with
-`visudo -cf` at install time. Nothing here claims the uid separation is installed
-until the owner steps have run.
+### What the uid separation does NOT do (read this before installing)
+
+The separation is real for **file confidentiality**, and that is all it is. Two
+measured facts bound it, and neither is closed by anything in this directory:
+
+1. **The agent's uid controls the Docker daemon that runs the production
+   database.** The socket is `login-user:login-group` 600 and every agent process runs as
+   `login-user`, so the owner DB credential is not the only way to the data — whoever
+   holds the socket reaches the Postgres container directly. Moving `migrate.env`
+   to `studio-deploy` therefore raises the cost of reading a *file*; it does not
+   make the database unreachable from a compromised agent. By the same argument,
+   `<slug>-verify-container` is an honest proof against *Coolify* misreporting a
+   deploy, but **not** against an adversary who controls the daemon: container
+   labels and health can be forged by anyone who can start containers.
+2. **On the host as measured 2026-09-22, the login uid can become root without a
+   password**, which voids the uid boundary entirely — root reads
+   `/var/studio-deploy/…` regardless of mode. See
+   `the unpublished host-trust review`; this is an
+   **open host-security blocker**, tracked separately from S0-13 because it is a
+   property of the host, not of this code.
+
+Blocker 2 must be remediated, and blocker 1 must be understood and accepted (or
+removed by moving the coding agent off the login account), **before** the
+installation steps below are worth running. Until then, installing this raises
+the bar against accident and against a weak attacker — it does not establish the
+boundary the design language implies.
+
+Smaller residuals: the deploy user can still invoke its two argument-free helpers
+— that is what they are for — and the sudoers empty-argument form is a sudo(8)
+behaviour that the owner must verify with `visudo -cf` at install time. Nothing
+here claims the uid separation is installed until the owner steps have run.
 
 ## Verification (no live mutation)
 
@@ -381,6 +455,7 @@ bash tests/hook-validation.sh    # only one full sha reaches the gate; env canno
 bash tests/migration-approval.sh # unapproved/edited SQL never reaches the DB; no argument is accepted
 bash tests/approval-binding.sh   # approval content verified independently and bound to the commit
 bash tests/deploy-user.sh        # the deploy credential is bound to the deploy uid; no argument injection
+bash tests/trusted-path.sh       # symlinked/replaceable trusted paths are refused; the chain is checked
 ```
 
 Each suite runs the component **substituted** (`tests/lib/harness.sh`), and each
@@ -390,9 +465,17 @@ helper calls are exercised through a sudo stand-in (`tests/lib/fake-sudo.sh`), s
 the call shape is tested without root — and case I asserts a refused call fails
 closed.
 
-Measured 2026-09-22 after S0-13 (counting `^PASS`): `ref-binding` **11/11**,
-`verify-binding` **10/10**, `hook-validation` **24/24**, `migration-approval`
-**16/16**, `approval-binding` **12/12**, `deploy-user` **13/13**.
+Measured 2026-09-22 after the trusted-path fix (counting `^PASS`): `ref-binding`
+**11/11**, `verify-binding` **10/10**, `hook-validation` **24/24**,
+`migration-approval` **16/16**, `approval-binding` **12/12**, `deploy-user`
+**13/13**, `trusted-path` **15/15** — **101/101, 0 FAIL**.
+
+`trusted-path` case A asserts that the shared trusted-path block is
+byte-identical in all four components (it is inlined on purpose — each component
+is installed standalone, with no shared library on the trust path — so drift is
+the risk that has to be tested rather than assumed), and case B pins the platform
+semantics the fix rests on: bare `stat` measures a symlink, `stat -L` measures
+its target.
 
 ## Open items
 

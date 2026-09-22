@@ -53,6 +53,52 @@ GATE="$TRUST_DIR/${SLUG}-deploy-gate"
 GATE_REF="migration/coolify-v5"
 
 msg() { printf '[deploy-hook] %s\n' "$*" >&2; }
+# The hook's refusal code is 2 throughout; die() keeps that convention so the
+# shared trusted-path helpers below can be used verbatim.
+die() { msg "$*"; exit 2; }
+
+# --- trusted-path predicates (lstat-correct, symlink-free) ------------------
+# `stat` uses lstat semantics: it measures the SYMLINK, not the file that is
+# actually opened or executed. That made the previous ownership check
+# bypassable on this very host — /usr/local/bin/docker is a root:wheel symlink
+# whose payload lives in /Applications/Docker.app and is owned by the LOGIN
+# USER, so `stat -f '%u'` returned 0 ("root-owned, trusted") while root would
+# have executed an agent-writable binary. Measured 2026-09-22.
+#
+# Two independent corrections, because neither alone is the property wanted:
+#   1. a trusted path must not BE a symlink — refused outright, there is no
+#      legitimate reason for one on an installed trust path; and
+#   2. every check uses `stat -L`, so if a link ever does appear, the property
+#      measured is the one that decides what actually runs.
+file_mode()  { stat -L -f '%Lp' "$1" 2>/dev/null || stat -L -c '%a' "$1"; }
+file_owner() { stat -L -f '%u'  "$1" 2>/dev/null || stat -L -c '%u'  "$1"; }
+
+# Ownership of the FILE is not enough: a root-owned file inside a directory the
+# agent can write can be replaced wholesale (unlink + create), so the guarantee
+# has to cover the whole chain from `/` down — every component root-owned and
+# never group/other-writable. The same rule applies to the host's sudoers
+# targets; see the unpublished host-trust review.
+assert_trusted_path() { # assert_trusted_path <absolute path>
+  local p="$1" owner mode
+  case "$p" in
+    /*) : ;;
+    *) die "trusted path must be absolute: $p" ;;
+  esac
+  while : ; do
+    [ ! -h "$p" ] || die "$p is a symlink — a trusted path must not be one"
+    owner="$(file_owner "$p")"
+    mode="$(file_mode "$p")"
+    [ "$owner" = "0" ] \
+      || die "$p is owned by uid $owner, expected root — the trusted path is replaceable"
+    case "$mode" in
+      *[2367]|*[2367]?) die "$p has mode $mode — must not be writable by group/other" ;;
+    esac
+    [ "$p" != "/" ] || break
+    p="${p%/*}"
+    [ -n "$p" ] || p="/"
+  done
+}
+
 
 case "$SLUG$TRUST_DIR$GATE_REPO$DEPLOY_USER" in
   *__*) msg "refused: unsubstituted placeholder — this is the canonical source, not an installed component"; exit 2 ;;
@@ -93,13 +139,15 @@ esac
 # group/other-writable gate is not the boundary this hook claims. On the
 # production path it must additionally be root-owned.
 [ -x "$GATE" ] || { msg "no trusted deploy gate at $GATE"; exit 2; }
-perms="$(stat -f '%Lp' "$GATE" 2>/dev/null || stat -c '%a' "$GATE")"
+# A root-owned SYMLINK to an agent-writable gate passed the old check, because
+# `stat` measures the link and not the file that is executed.
+[ ! -h "$GATE" ] || { msg "refusing: $GATE is a symlink — the gate must be a real root-owned file"; exit 2; }
+perms="$(file_mode "$GATE")"
 case "$perms" in
   *[2367]|*[2367]?) msg "refusing: $GATE has mode $perms, must not be writable by group/other"; exit 2 ;;
 esac
 if [ "$TRUST_DIR" = "$DEFAULT_TRUST_DIR" ]; then
-  owner="$(stat -f '%u' "$GATE" 2>/dev/null || stat -c '%u' "$GATE")"
-  [ "$owner" = "0" ] || { msg "refusing: $GATE is owned by uid $owner, expected root"; exit 2; }
+  assert_trusted_path "$GATE"
 fi
 
 # A second, independent bound on the sha, so a bug in the pattern above cannot
