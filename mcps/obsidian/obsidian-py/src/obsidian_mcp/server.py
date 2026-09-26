@@ -15,6 +15,7 @@ from mcp.types import ToolAnnotations
 
 from . import __version__
 from .config import ServerConfig, load_config
+from .resources import ObsidianMCP, parse_uri
 from .vault import Vault, VaultError
 
 log = logging.getLogger("obsidian_mcp")
@@ -31,6 +32,9 @@ Tips:
   update_frontmatter over rewriting whole notes with create_note(overwrite=true).
 - move_note keeps links intact by rewriting them in all referring notes.
 - delete_note moves notes to the vault's .trash folder unless permanent=true.
+- Every `path` parameter also accepts obsidian:// URIs, e.g. obsidian://<vault>/Folder/Note.md#Heading
+  or Obsidian's own "Copy Obsidian URL" links (obsidian://open?vault=...&file=...).
+- Notes are also exposed as MCP resources (obsidian://<vault>/<path>, .daily/<date>, .tag/<tag>).
 """
 
 READ = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
@@ -53,8 +57,10 @@ def build_server(cfg: ServerConfig) -> FastMCP:
         # Protection comes from the bearer token; host header checks would break Tailscale/LAN names.
         security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
 
-    mcp = FastMCP(
+    mcp = ObsidianMCP(
+        vaults,
         "obsidian",
+        resource_limit=cfg.resource_limit,
         instructions=INSTRUCTIONS,
         host=cfg.host,
         port=cfg.port,
@@ -71,6 +77,19 @@ def build_server(cfg: ServerConfig) -> FastMCP:
         if default_vault:
             return vaults[default_vault]
         raise VaultError(f"Bitte `vault` angeben. Verfügbar: {', '.join(vaults)}")
+
+    def VP(vault: str | None, path: str) -> tuple[Vault, str, str | None]:
+        """Vault + path, where path may also be an obsidian:// URI (vault taken from the URI)."""
+        if path and path.strip().lower().startswith("obsidian://"):
+            p = parse_uri(path.strip(), vaults)
+            v = vaults[p.vault]
+            if p.kind == "daily":
+                return v, v.daily_note_path(p.arg), p.fragment
+            if p.kind != "file":
+                raise VaultError(f"URI zeigt nicht auf eine Notiz: {path}")
+            frag = p.fragment if p.fragment and not p.fragment.startswith("^") else None
+            return v, p.arg, frag
+        return V(vault), path, None
 
     # ------------------------------------------------------------------ overview
 
@@ -103,13 +122,21 @@ def build_server(cfg: ServerConfig) -> FastMCP:
         """Read a note. `path` may be 'Folder/Note', 'Note.md' or just a unique note name.
         `section` returns only the part under that heading. Metadata includes frontmatter,
         tags, headings, size and modification time."""
-        return V(vault).read_note(path, section, include_metadata)
+        v, path, frag = VP(vault, path)
+        return v.read_note(path, section or frag, include_metadata)
 
     @mcp.tool(annotations=READ)
     def read_multiple_notes(paths: list[str], vault: str | None = None,
                             max_chars_each: int = 20000) -> list[dict[str, Any]]:
         """Read several notes at once (content only)."""
-        return V(vault).read_many(paths, max_chars_each)
+        out = []
+        for p in paths:
+            try:
+                v, rel, _ = VP(vault, p)
+                out += v.read_many([rel], max_chars_each)
+            except VaultError as exc:
+                out.append({"path": p, "error": str(exc)})
+        return out
 
     @mcp.tool(annotations=READ)
     def search_notes(query: str, vault: str | None = None, regex: bool = False, case_sensitive: bool = False,
@@ -132,12 +159,14 @@ def build_server(cfg: ServerConfig) -> FastMCP:
     @mcp.tool(annotations=READ)
     def get_outgoing_links(path: str, vault: str | None = None) -> list[dict[str, Any]]:
         """Links and embeds in a note, each with the resolved target path (null = unresolved)."""
-        return V(vault).outgoing_links(path)
+        v, path, _ = VP(vault, path)
+        return v.outgoing_links(path)
 
     @mcp.tool(annotations=READ)
     def get_backlinks(path: str, vault: str | None = None) -> list[dict[str, Any]]:
         """Notes that link to or embed the given note, with line context."""
-        return V(vault).backlinks(path)
+        v, path, _ = VP(vault, path)
+        return v.backlinks(path)
 
     @mcp.tool(annotations=READ)
     def list_tags(vault: str | None = None, prefix: str | None = None) -> list[dict[str, Any]]:
@@ -203,20 +232,23 @@ def build_server(cfg: ServerConfig) -> FastMCP:
         """Append text to a note. With `heading`, insert at the end of that section (heading is
         created at the end if missing). prepend=true inserts at the start (after frontmatter or
         directly below the heading)."""
-        return V(vault).append(path, content, heading=heading, create_if_missing=create_if_missing, prepend=prepend)
+        v, path, frag = VP(vault, path)
+        return v.append(path, content, heading=heading or frag, create_if_missing=create_if_missing, prepend=prepend)
 
     @mcp.tool(annotations=WRITE)
     def replace_in_note(path: str, old: str, new: str, vault: str | None = None, regex: bool = False,
                         count: int = 0) -> dict[str, Any]:
         """Replace text in a note (count=0 replaces all occurrences). Errors if nothing matched."""
-        return V(vault).replace_in_note(path, old, new, regex, count)
+        v, path, _ = VP(vault, path)
+        return v.replace_in_note(path, old, new, regex, count)
 
     @mcp.tool(annotations=WRITE)
     def update_frontmatter(path: str, vault: str | None = None, set: dict[str, Any] | None = None,  # noqa: A002
                            remove: list[str] | None = None, add_tags: list[str] | None = None,
                            remove_tags: list[str] | None = None) -> dict[str, Any]:
         """Set/remove frontmatter properties and add/remove tags without touching the note body."""
-        return V(vault).update_frontmatter(path, set, remove, add_tags, remove_tags)
+        v, path, _ = VP(vault, path)
+        return v.update_frontmatter(path, set, remove, add_tags, remove_tags)
 
     @mcp.tool(annotations=WRITE)
     def create_note_from_template(template: str, path: str, vault: str | None = None,
@@ -230,12 +262,14 @@ def build_server(cfg: ServerConfig) -> FastMCP:
                   overwrite: bool = False) -> dict[str, Any]:
         """Move/rename a note. Destination ending in '/' keeps the file name. With update_links
         all wikilinks and markdown links pointing to it are rewritten (like Obsidian does)."""
-        return V(vault).move_note(source, destination, update_links, overwrite)
+        v, source, _ = VP(vault, source)
+        return v.move_note(source, destination, update_links, overwrite)
 
     @mcp.tool(annotations=DESTRUCTIVE)
     def delete_note(path: str, vault: str | None = None, permanent: bool = False) -> dict[str, Any]:
         """Delete a note: moved to the vault's .trash folder by default, permanent=true deletes it."""
-        return V(vault).delete_note(path, permanent)
+        v, path, _ = VP(vault, path)
+        return v.delete_note(path, permanent)
 
     return _finish(mcp)
 

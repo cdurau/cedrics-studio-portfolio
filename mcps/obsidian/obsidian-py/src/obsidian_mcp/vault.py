@@ -120,6 +120,17 @@ class Vault:
         except NoteNotFound:
             return self.note_path(path, must_exist=False)
 
+    def file_path(self, path: str) -> str:
+        """Existing file of any type (attachments), resolved like an Obsidian link."""
+        rel = self._check_inside(path)
+        if self._abs(rel).is_file():
+            return rel
+        idx = self.index()
+        hit = idx.by_path.get(norm(rel)) or self.resolve_link(path, "", idx)
+        if hit:
+            return hit
+        raise NoteNotFound(f"Datei nicht gefunden: {path}")
+
     def folder_path(self, folder: str | None) -> str:
         if not folder or folder.strip() in ("", "/", "."):
             return ""

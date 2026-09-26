@@ -1,0 +1,133 @@
+import asyncio
+import base64
+import json
+
+import pytest
+from mcp.shared.memory import create_connected_server_and_client_session
+
+from obsidian_mcp.config import ServerConfig, VaultConfig
+from obsidian_mcp.resources import note_uri, parse_uri
+from obsidian_mcp.server import build_server
+from obsidian_mcp.vault import Vault, VaultError
+
+from test_vault import FILES, make_vault
+
+
+@pytest.fixture
+def server(tmp_path):
+    vault_dir = tmp_path / "Mein Vault"
+    vault_dir.mkdir()
+    files = dict(FILES)
+    files["Journal/2026-09-26.md"] = "# Tag\n## Log\n- eins\n"
+    make_vault(vault_dir, files, obsidian={"daily-notes.json": {"folder": "Journal"}})
+    cfg = ServerConfig(vaults={"privat": VaultConfig(name="privat", path=vault_dir)})
+    return build_server(cfg), vault_dir
+
+
+def run(server, fn):
+    async def main():
+        async with create_connected_server_and_client_session(server._mcp_server) as client:
+            return await fn(client)
+    return asyncio.run(main())
+
+
+def text_of(result):
+    return result.contents[0].text
+
+
+def test_parse_uri_variants(tmp_path):
+    vaults = {"privat": Vault(VaultConfig(name="privat", path=tmp_path))}
+    assert parse_uri("obsidian://privat/", vaults).kind == "vault"
+    p = parse_uri("obsidian://privat/Ordner%20A/Notiz%20%C3%84.md#Meine%20%C3%9Cberschrift", vaults)
+    assert (p.kind, p.arg, p.fragment) == ("file", "Ordner A/Notiz Ä.md", "Meine Überschrift")
+    assert parse_uri("obsidian://privat/Ordner/", vaults).kind == "folder"
+    assert parse_uri("obsidian://privat/.daily/gestern", vaults).arg == "gestern"
+    assert parse_uri("obsidian://privat/.tag/projekt/beta", vaults).arg == "projekt/beta"
+    native = parse_uri(f"obsidian://open?vault={tmp_path.name}&file=Ordner%2FNotiz", vaults)
+    assert (native.vault, native.kind, native.arg) == ("privat", "file", "Ordner/Notiz")
+    with pytest.raises(VaultError):
+        parse_uri("obsidian://gibtsnicht/x.md", vaults)
+    assert note_uri("privat", "Ordner A/Ä.md", "Kopf") == "obsidian://privat/Ordner%20A/%C3%84.md#Kopf"
+
+
+def test_list_resources_and_templates(server):
+    srv, _ = server
+
+    async def fn(client):
+        res = await client.list_resources()
+        tpl = await client.list_resource_templates()
+        return res, tpl
+
+    res, tpl = run(srv, fn)
+    uris = [str(r.uri) for r in res.resources]
+    assert "obsidian://privat/" in uris
+    assert "obsidian://privat/Projekte/Alpha.md" in uris
+    assert "obsidian://privat/.daily/today" in uris
+    assert {t.name for t in tpl.resourceTemplates} == {"note", "folder", "daily-note", "tag"}
+
+
+def test_read_resources(server):
+    srv, _ = server
+
+    async def fn(client):
+        out = {}
+        for key, uri in {
+            "note": "obsidian://privat/Projekte/Alpha.md",
+            "section": "obsidian://privat/Projekte/Alpha.md#Aufgaben",
+            "noext": "obsidian://privat/Beta",
+            "root": "obsidian://privat/",
+            "folder": "obsidian://privat/Projekte/",
+            "tag": "obsidian://privat/.tag/projekt",
+            "daily": "obsidian://privat/.daily/2026-09-26",
+            "native": "obsidian://open?vault=Mein%20Vault&file=Projekte%2FAlpha",
+            "bin": "obsidian://privat/bild.png",
+        }.items():
+            out[key] = await client.read_resource(uri)
+        return out
+
+    r = run(srv, fn)
+    assert text_of(r["note"]).startswith("# Alpha\n")
+    assert text_of(r["section"]).strip() == "## Aufgaben\n- a"
+    assert "Beta Inhalt" in text_of(r["noext"])
+    assert "## Unterordner" in text_of(r["root"]) and "[Projekte/](obsidian://privat/Projekte/)" in text_of(r["root"])
+    assert "[Alpha](obsidian://privat/Projekte/Alpha.md)" in text_of(r["folder"])
+    assert "[Beta](obsidian://privat/Beta.md)" in text_of(r["tag"])
+    assert "- eins" in text_of(r["daily"])
+    assert text_of(r["native"]).startswith("# Alpha")
+    assert base64.b64decode(r["bin"].contents[0].blob) == b"PNG"
+    assert r["bin"].contents[0].mimeType == "image/png"
+
+
+def test_resource_errors(server):
+    srv, _ = server
+
+    async def fn(client):
+        errors = []
+        for uri in ["obsidian://privat/Fehlt.md", "obsidian://privat/.daily/1999-01-01",
+                    "obsidian://privat/../geheim.md", "obsidian://privat/.obsidian/app.json"]:
+            try:
+                await client.read_resource(uri)
+                errors.append(None)
+            except Exception as exc:  # McpError
+                errors.append(str(exc))
+        return errors
+
+    errors = run(srv, fn)
+    assert all(errors), errors
+
+
+def test_tools_accept_obsidian_uris(server):
+    srv, vault_dir = server
+
+    async def fn(client):
+        a = await client.call_tool("read_note", {"path": "obsidian://privat/Projekte/Alpha.md#Notizen"})
+        b = await client.call_tool("append_to_note", {"path": "obsidian://privat/.daily/2026-09-26#Log",
+                                                      "content": "- zwei"})
+        c = await client.call_tool("get_backlinks", {"path": "obsidian://open?vault=Mein%20Vault&file=Beta"})
+        return a, b, c
+
+    a, b, c = run(srv, fn)
+    assert json.loads(a.content[0].text)["content"].strip() == "## Notizen\nx"
+    assert not b.isError
+    assert (vault_dir / "Journal/2026-09-26.md").read_text().endswith("## Log\n- eins\n- zwei\n")
+    assert not c.isError and "Index.md" in c.content[0].text

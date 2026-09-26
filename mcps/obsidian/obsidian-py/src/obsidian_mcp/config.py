@@ -27,6 +27,7 @@ class ServerConfig:
     port: int = 8765
     token: str | None = None
     allowed_hosts: list[str] = field(default_factory=list)
+    resource_limit: int = 1000  # max. notes listed as MCP resources (newest first)
 
 
 def _slug(name: str) -> str:
@@ -69,6 +70,7 @@ def load_config(
         cfg.port = int(srv.get("port", cfg.port))
         cfg.token = srv.get("token") or None
         cfg.allowed_hosts = list(srv.get("allowed_hosts", []))
+        cfg.resource_limit = int(srv.get("resource_limit", cfg.resource_limit))
         for name, v in data.get("vaults", {}).items():
             vc = VaultConfig(
                 name=_slug(name),
@@ -91,6 +93,8 @@ def load_config(
     cfg.host = host or os.environ.get("OBSIDIAN_MCP_HOST") or cfg.host
     cfg.port = int(port or os.environ.get("OBSIDIAN_MCP_PORT") or cfg.port)
     cfg.token = token or os.environ.get("OBSIDIAN_MCP_TOKEN") or cfg.token
+    if os.environ.get("OBSIDIAN_MCP_RESOURCE_LIMIT"):
+        cfg.resource_limit = int(os.environ["OBSIDIAN_MCP_RESOURCE_LIMIT"])
     if os.environ.get("OBSIDIAN_MCP_ALLOWED_HOSTS"):
         cfg.allowed_hosts = [h.strip() for h in os.environ["OBSIDIAN_MCP_ALLOWED_HOSTS"].split(",") if h.strip()]
 
