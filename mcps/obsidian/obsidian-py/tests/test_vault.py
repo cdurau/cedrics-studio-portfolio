@@ -122,6 +122,47 @@ def test_create_append_replace(tmp_path):
         v.replace_in_note("Beta", "gibtsnicht", "x")
 
 
+def test_replace_in_note_dry_run(tmp_path):
+    v = make_vault(tmp_path, FILES)
+    before = (tmp_path / "Waise.md").read_text()
+    res = v.replace_in_note("Waise", "Kaffee", "Tee", dry_run=True)
+    assert res["dry_run"] and res["changed"] and res["replacements"] == 2
+    assert "-Niemand verlinkt mich. Kaffee Kaffee." in res["diff"]
+    assert "+Niemand verlinkt mich. Tee Tee." in res["diff"]
+    assert (tmp_path / "Waise.md").read_text() == before
+
+
+def test_replace_section(tmp_path):
+    v = make_vault(tmp_path, FILES)
+    # middle section: next heading stays separated by a blank line
+    res = v.replace_section("Projekte/Alpha", "Aufgaben", "- neu 1\n- neu 2\n\n")
+    assert res == {"path": "Projekte/Alpha.md", "heading": "Aufgaben", "changed": True}
+    alpha = (tmp_path / "Projekte/Alpha.md").read_text()
+    assert alpha.endswith("## Aufgaben\n- neu 1\n- neu 2\n\n## Notizen\nx\n")
+    # last section
+    v.replace_section("Projekte/Alpha", "## Notizen", "y")
+    assert (tmp_path / "Projekte/Alpha.md").read_text().endswith("## Notizen\ny\n")
+    # empty body, subsections belong to the section and are replaced too
+    (tmp_path / "S.md").write_text("# A\ntext\n## A1\nsub\n# B\nb\n")
+    v.replace_section("S", "A", "")
+    assert (tmp_path / "S.md").read_text() == "# A\n\n# B\nb\n"
+    # heading at end of file without newline
+    (tmp_path / "T.md").write_text("# T")
+    v.replace_section("T", "T", "neu")
+    assert (tmp_path / "T.md").read_text() == "# T\nneu\n"
+    # dry run writes nothing
+    before = (tmp_path / "Projekte/Alpha.md").read_text()
+    res = v.replace_section("Projekte/Alpha", "Aufgaben", "anders", dry_run=True)
+    assert res["dry_run"] and "+anders" in res["diff"]
+    assert (tmp_path / "Projekte/Alpha.md").read_text() == before
+    with pytest.raises(VaultError, match="nicht gefunden"):
+        v.replace_section("Projekte/Alpha", "Gibtsnicht", "x")
+    ro = make_vault(tmp_path, {}, read_only=True)
+    with pytest.raises(VaultError):
+        ro.replace_section("Projekte/Alpha", "Aufgaben", "x")
+    assert ro.replace_section("Projekte/Alpha", "Aufgaben", "x", dry_run=True)["dry_run"]
+
+
 def test_update_frontmatter(tmp_path):
     v = make_vault(tmp_path, FILES)
     res = v.update_frontmatter("Waise", {"status": "erledigt"}, add_tags=["#neu"])

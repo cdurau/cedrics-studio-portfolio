@@ -131,3 +131,57 @@ def test_tools_accept_obsidian_uris(server):
     assert not b.isError
     assert (vault_dir / "Journal/2026-09-26.md").read_text().endswith("## Log\n- eins\n- zwei\n")
     assert not c.isError and "Index.md" in c.content[0].text
+
+
+def test_list_results_are_single_json_objects(server):
+    srv, _ = server
+
+    async def fn(client):
+        tags = await client.call_tool("list_tags", {})
+        unresolved = await client.call_tool("find_unresolved_links", {})
+        empty = await client.call_tool("find_notes_by_tag", {"tag": "gibtsnicht"})
+        back = await client.call_tool("get_backlinks", {"path": "Beta"})
+        return tags, unresolved, empty, back
+
+    for res in run(srv, fn):
+        assert not res.isError and len(res.content) == 1
+    tags, unresolved, empty, back = (json.loads(r.content[0].text) for r in run(srv, fn))
+    assert tags["total"] == len(tags["tags"]) > 0
+    assert unresolved["total"] == 1 and unresolved["unresolved"][0]["target"] == "Fehlt"
+    assert empty == {"total": 0, "tag": "gibtsnicht", "notes": []}
+    assert back["path"] == "Beta.md" and back["total"] == len(back["backlinks"]) >= 1
+
+
+def test_replace_section_tool_with_uri_fragment(server):
+    srv, vault_dir = server
+
+    async def fn(client):
+        dry = await client.call_tool("replace_section", {"path": "obsidian://privat/Projekte/Alpha.md#Aufgaben",
+                                                         "content": "- x", "dry_run": True})
+        real = await client.call_tool("replace_section", {"path": "Projekte/Alpha", "heading": "Aufgaben",
+                                                          "content": "- x"})
+        missing = await client.call_tool("replace_section", {"path": "Projekte/Alpha", "content": "- x"})
+        return dry, real, missing
+
+    dry, real, missing = run(srv, fn)
+    assert json.loads(dry.content[0].text)["dry_run"] is True
+    assert not real.isError
+    assert "## Aufgaben\n- x\n\n## Notizen" in (vault_dir / "Projekte/Alpha.md").read_text()
+    assert missing.isError
+
+
+def test_http_auth_rejects_query_token(tmp_path):
+    from starlette.testclient import TestClient
+
+    from obsidian_mcp.server import build_http_app
+
+    vault_dir = tmp_path / "v"
+    vault_dir.mkdir()
+    cfg = ServerConfig(vaults={"v": VaultConfig(name="v", path=vault_dir)}, token="geheim")
+    with TestClient(build_http_app(cfg)) as http:
+        assert http.get("/health").status_code == 200
+        assert http.post("/mcp?token=geheim", json={}).status_code == 401
+        assert http.post("/mcp", json={}, headers={"Authorization": "Bearer falsch"}).status_code == 401
+        ok = http.post("/mcp", headers={"Authorization": "Bearer geheim", "Accept": "application/json, text/event-stream"},
+                       json={"jsonrpc": "2.0", "id": 1, "method": "ping"})
+        assert ok.status_code != 401

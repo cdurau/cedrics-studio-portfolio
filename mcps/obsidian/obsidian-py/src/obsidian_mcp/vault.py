@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import json
 import os
 import posixpath
@@ -574,8 +575,10 @@ class Vault:
         self._write(rel, text)
         return info
 
-    def replace_in_note(self, path: str, old: str, new: str, regex: bool = False, count: int = 0) -> dict[str, Any]:
-        self._ensure_writable()
+    def replace_in_note(self, path: str, old: str, new: str, regex: bool = False, count: int = 0,
+                        dry_run: bool = False) -> dict[str, Any]:
+        if not dry_run:
+            self._ensure_writable()
         rel = self.note_path(path)
         text = self._abs(rel).read_text(encoding="utf-8")
         if regex:
@@ -589,8 +592,40 @@ class Vault:
             n = min(n, count) if count > 0 else n
         if n == 0:
             raise VaultError("Suchtext nicht gefunden – nichts geändert.")
-        self._write(rel, new_text)
-        return {"path": rel, "replacements": n}
+        return self._commit(rel, text, new_text, dry_run, {"path": rel, "replacements": n})
+
+    def replace_section(self, path: str, heading: str, content: str, dry_run: bool = False) -> dict[str, Any]:
+        """Replace everything below *heading* up to the next heading of the same or higher level.
+        The heading line itself is kept."""
+        if not dry_run:
+            self._ensure_writable()
+        rel = self.note_path(path)
+        text = self._abs(rel).read_text(encoding="utf-8")
+        found = parsing.find_section(text, heading)
+        if not found:
+            heads = [h.text for h in parsing.extract_headings(text)]
+            raise VaultError(f"Überschrift '{heading}' nicht gefunden. Vorhanden: {heads}")
+        h, end = found
+        is_last = end >= len(text)
+        body = content.strip("\n")
+        body = body + "\n" if body else ""
+        if not is_last:
+            body += "\n"  # blank line before the next heading
+        prefix = "" if h.end == 0 or text[h.end - 1] == "\n" else "\n"
+        new_text = text[:h.end] + prefix + body + text[end:]
+        return self._commit(rel, text, new_text, dry_run, {"path": rel, "heading": h.text})
+
+    def _commit(self, rel: str, old_text: str, new_text: str, dry_run: bool, info: dict[str, Any]) -> dict[str, Any]:
+        """Write *new_text* – or, with dry_run, only report the change as a unified diff."""
+        info["changed"] = new_text != old_text
+        if dry_run:
+            diff = difflib.unified_diff(old_text.splitlines(keepends=True), new_text.splitlines(keepends=True),
+                                        fromfile=f"a/{rel}", tofile=f"b/{rel}")
+            info.update(dry_run=True, diff="".join(diff))
+            return info
+        if info["changed"]:
+            self._write(rel, new_text)
+        return info
 
     def update_frontmatter(self, path: str, set_values: dict[str, Any] | None = None,
                            remove_keys: list[str] | None = None,

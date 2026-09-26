@@ -28,8 +28,10 @@ vault root (".md" is optional). Obsidian wikilinks ([[Note]], [[Note#Heading|Ali
 Tips:
 - Call list_vaults first if more than one vault is configured; pass `vault` to every tool.
 - Prefer search_notes / find_notes_by_tag / get_backlinks to discover notes, then read_note.
-- For edits prefer append_to_note (optionally under a heading), replace_in_note or
+- For edits prefer append_to_note (optionally under a heading), replace_section, replace_in_note or
   update_frontmatter over rewriting whole notes with create_note(overwrite=true).
+- replace_in_note and replace_section accept dry_run=true to preview the change as a diff.
+- List-type results are JSON objects with a `total` count and a named list (e.g. {"total": 2, "tags": [...]}).
 - move_note keeps links intact by rewriting them in all referring notes.
 - delete_note moves notes to the vault's .trash folder unless permanent=true.
 - Every `path` parameter also accepts obsidian:// URIs, e.g. obsidian://<vault>/Folder/Note.md#Heading
@@ -40,6 +42,12 @@ Tips:
 READ = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
 WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False)
 DESTRUCTIVE = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False)
+
+
+def listing(key: str, items: list[Any], **extra: Any) -> dict[str, Any]:
+    """Uniform envelope for list results: one JSON object instead of one content block per item
+    (and no empty result for empty lists)."""
+    return {"total": len(items), **extra, key: items}
 
 
 def build_server(cfg: ServerConfig) -> FastMCP:
@@ -94,9 +102,9 @@ def build_server(cfg: ServerConfig) -> FastMCP:
     # ------------------------------------------------------------------ overview
 
     @mcp.tool(annotations=READ)
-    def list_vaults() -> list[dict[str, Any]]:
+    def list_vaults() -> dict[str, Any]:
         """List configured vaults with note counts, read-only flag and daily-note/template settings."""
-        return [v.summary() for v in vaults.values()]
+        return listing("vaults", [v.summary() for v in vaults.values()])
 
     @mcp.tool(annotations=READ)
     def list_notes(vault: str | None = None, folder: str | None = None, recursive: bool = True,
@@ -105,14 +113,14 @@ def build_server(cfg: ServerConfig) -> FastMCP:
         return V(vault).list_notes(folder, recursive, include_attachments, limit)
 
     @mcp.tool(annotations=READ)
-    def list_folders(vault: str | None = None) -> list[str]:
+    def list_folders(vault: str | None = None) -> dict[str, Any]:
         """List all folders of the vault (hidden folders like .obsidian/.trash are excluded)."""
-        return V(vault).list_folders()
+        return listing("folders", V(vault).list_folders())
 
     @mcp.tool(annotations=READ)
-    def get_recent_notes(vault: str | None = None, limit: int = 20, folder: str | None = None) -> list[dict[str, Any]]:
+    def get_recent_notes(vault: str | None = None, limit: int = 20, folder: str | None = None) -> dict[str, Any]:
         """Most recently modified notes, newest first."""
-        return V(vault).recent(limit, folder)
+        return listing("notes", V(vault).recent(limit, folder))
 
     # ------------------------------------------------------------------ reading & search
 
@@ -127,7 +135,7 @@ def build_server(cfg: ServerConfig) -> FastMCP:
 
     @mcp.tool(annotations=READ)
     def read_multiple_notes(paths: list[str], vault: str | None = None,
-                            max_chars_each: int = 20000) -> list[dict[str, Any]]:
+                            max_chars_each: int = 20000) -> dict[str, Any]:
         """Read several notes at once (content only)."""
         out = []
         for p in paths:
@@ -136,7 +144,7 @@ def build_server(cfg: ServerConfig) -> FastMCP:
                 out += v.read_many([rel], max_chars_each)
             except VaultError as exc:
                 out.append({"path": p, "error": str(exc)})
-        return out
+        return listing("notes", out)
 
     @mcp.tool(annotations=READ)
     def search_notes(query: str, vault: str | None = None, regex: bool = False, case_sensitive: bool = False,
@@ -149,44 +157,44 @@ def build_server(cfg: ServerConfig) -> FastMCP:
 
     @mcp.tool(annotations=READ)
     def search_by_frontmatter(key: str, value: str | None = None, vault: str | None = None,
-                              folder: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+                              folder: str | None = None, limit: int = 100) -> dict[str, Any]:
         """Find notes whose frontmatter has `key` (and, if given, a value equal to/containing `value`;
         list values are checked element-wise, case-insensitive)."""
-        return V(vault).search_frontmatter(key, value, folder, limit)
+        return listing("notes", V(vault).search_frontmatter(key, value, folder, limit), key=key)
 
     # ------------------------------------------------------------------ links & tags
 
     @mcp.tool(annotations=READ)
-    def get_outgoing_links(path: str, vault: str | None = None) -> list[dict[str, Any]]:
+    def get_outgoing_links(path: str, vault: str | None = None) -> dict[str, Any]:
         """Links and embeds in a note, each with the resolved target path (null = unresolved)."""
         v, path, _ = VP(vault, path)
-        return v.outgoing_links(path)
+        return listing("links", v.outgoing_links(path), path=v.note_path(path))
 
     @mcp.tool(annotations=READ)
-    def get_backlinks(path: str, vault: str | None = None) -> list[dict[str, Any]]:
+    def get_backlinks(path: str, vault: str | None = None) -> dict[str, Any]:
         """Notes that link to or embed the given note, with line context."""
         v, path, _ = VP(vault, path)
-        return v.backlinks(path)
+        return listing("backlinks", v.backlinks(path), path=v.note_path(path))
 
     @mcp.tool(annotations=READ)
-    def list_tags(vault: str | None = None, prefix: str | None = None) -> list[dict[str, Any]]:
+    def list_tags(vault: str | None = None, prefix: str | None = None) -> dict[str, Any]:
         """All tags (inline #tags and frontmatter tags) with the number of notes using them."""
-        return V(vault).tags(prefix)
+        return listing("tags", V(vault).tags(prefix))
 
     @mcp.tool(annotations=READ)
-    def find_notes_by_tag(tag: str, vault: str | None = None, include_nested: bool = True) -> list[str]:
+    def find_notes_by_tag(tag: str, vault: str | None = None, include_nested: bool = True) -> dict[str, Any]:
         """Notes carrying a tag ('#projekt' or 'projekt'). include_nested also matches #projekt/sub."""
-        return V(vault).notes_by_tag(tag, include_nested)
+        return listing("notes", V(vault).notes_by_tag(tag, include_nested), tag=tag)
 
     @mcp.tool(annotations=READ)
-    def find_orphan_notes(vault: str | None = None, strict: bool = False) -> list[str]:
+    def find_orphan_notes(vault: str | None = None, strict: bool = False) -> dict[str, Any]:
         """Notes without incoming links. strict=true: only notes with neither incoming nor outgoing links."""
-        return V(vault).orphans(strict)
+        return listing("notes", V(vault).orphans(strict))
 
     @mcp.tool(annotations=READ)
-    def find_unresolved_links(vault: str | None = None) -> list[dict[str, Any]]:
+    def find_unresolved_links(vault: str | None = None) -> dict[str, Any]:
         """Links pointing to notes/files that don't exist, grouped by target."""
-        return V(vault).unresolved()
+        return listing("unresolved", V(vault).unresolved())
 
     # ------------------------------------------------------------------ daily notes & templates (read)
 
@@ -237,10 +245,23 @@ def build_server(cfg: ServerConfig) -> FastMCP:
 
     @mcp.tool(annotations=WRITE)
     def replace_in_note(path: str, old: str, new: str, vault: str | None = None, regex: bool = False,
-                        count: int = 0) -> dict[str, Any]:
-        """Replace text in a note (count=0 replaces all occurrences). Errors if nothing matched."""
+                        count: int = 0, dry_run: bool = False) -> dict[str, Any]:
+        """Replace text in a note (count=0 replaces all occurrences). Errors if nothing matched.
+        dry_run=true writes nothing and returns the change as a unified diff."""
         v, path, _ = VP(vault, path)
-        return v.replace_in_note(path, old, new, regex, count)
+        return v.replace_in_note(path, old, new, regex, count, dry_run)
+
+    @mcp.tool(annotations=DESTRUCTIVE)
+    def replace_section(path: str, content: str, heading: str | None = None, vault: str | None = None,
+                        dry_run: bool = False) -> dict[str, Any]:
+        """Replace the whole content below a heading (up to the next heading of the same or higher
+        level). The heading line itself is kept; `content` is the new body without the heading.
+        `heading` may also be given as #fragment of an obsidian:// URI.
+        dry_run=true writes nothing and returns the change as a unified diff."""
+        v, path, frag = VP(vault, path)
+        if not (heading or frag):
+            raise VaultError("Bitte `heading` angeben.")
+        return v.replace_section(path, heading or frag, content, dry_run)
 
     @mcp.tool(annotations=WRITE)
     def update_frontmatter(path: str, vault: str | None = None, set: dict[str, Any] | None = None,  # noqa: A002
@@ -287,7 +308,8 @@ def _finish(mcp: FastMCP) -> FastMCP:
 
 
 class BearerAuth:
-    """Minimal ASGI middleware: requires 'Authorization: Bearer <token>' (or ?token=)."""
+    """Minimal ASGI middleware: requires 'Authorization: Bearer <token>'.
+    Tokens in the query string are deliberately not accepted (they end up in logs and histories)."""
 
     def __init__(self, app, token: str, open_paths: tuple[str, ...] = ("/health",)):
         self.app = app
@@ -302,10 +324,6 @@ class BearerAuth:
             if k == b"authorization" and v[:7].lower() == b"bearer ":
                 supplied = v[7:].strip()
                 break
-        if not supplied:
-            from urllib.parse import parse_qs
-            qs = parse_qs(scope.get("query_string", b"").decode())
-            supplied = (qs.get("token") or [""])[0].encode()
         if supplied and hmac.compare_digest(supplied, self.token):
             return await self.app(scope, receive, send)
         body = b'{"error":"unauthorized"}'
