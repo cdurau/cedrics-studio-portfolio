@@ -72,7 +72,7 @@ DOCKER_HOST="__DOCKER_HOST__"
 DB_NETWORK="coolify"
 DEFAULT_TRUST_DIR="/usr/local/libexec/studio-deploy"
 
-EXPECTED_ENV_FILE="$STATE_DIR/migrate.env"
+EXPECTED_ENV_FILE="$TRUST_DIR/credentials/${SLUG}.env"
 EXPECTED_APPROVALS_FILE="$TRUST_DIR/approved-migrations/${SLUG}.txt"
 MIG_DIR="$GATE_REPO/apps/$SLUG/drizzle/migrations"
 
@@ -162,6 +162,7 @@ fi
 
 JOURNAL="$MIG_DIR/meta/_journal.json"
 [ -r "$JOURNAL" ] || die "missing migration journal at $JOURNAL"
+[ ! -h "$JOURNAL" ] || die "$JOURNAL is a symlink — the migration journal must be a real file in the approved checkout"
 command -v jq >/dev/null 2>&1 || die "jq is required to read the migration journal"
 
 digest() { # digest <file>
@@ -197,6 +198,20 @@ log "clone HEAD $HEAD_SHA matches the approved commit"
 TAGS="$(jq -r '.entries[].tag' "$JOURNAL")"
 [ -n "$TAGS" ] || die "journal contains no entries"
 
+# Snapshot first, then hash and later execute the SAME root-owned bytes. The
+# checkout belongs to the deploy user, so validating one open() and executing a
+# later open() would leave a TOCTOU window. A root-owned private snapshot also
+# makes the tag -> file association explicit instead of relying on a loop-local
+# variable left over from validation.
+SNAPSHOT_DIR="$(mktemp -d /var/tmp/studio-deploy-migrations.XXXXXX)" \
+  || die "could not create a private migration snapshot"
+chmod 700 "$SNAPSHOT_DIR" || die "could not protect migration snapshot $SNAPSHOT_DIR"
+cleanup_snapshot() { rm -rf -- "$SNAPSHOT_DIR"; }
+trap cleanup_snapshot EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 validated=""   # "<tag> <hash>" lines, journal order
 while IFS= read -r tag; do
   [ -n "$tag" ] || continue
@@ -207,7 +222,11 @@ while IFS= read -r tag; do
   esac
   file="$MIG_DIR/$tag.sql"
   [ -r "$file" ] || die "journal entry $tag has no SQL file at $file"
-  hash="$(digest "$file")"
+  [ ! -h "$file" ] || die "migration $tag is a symlink — refusing to read SQL outside the approved checkout"
+  snapshot="$SNAPSHOT_DIR/$tag.sql"
+  cp "$file" "$snapshot" || die "could not snapshot migration $tag"
+  chmod 600 "$snapshot" || die "could not protect snapshot for migration $tag"
+  hash="$(digest "$snapshot")"
 
   # Owner boundary: the operator approves exact content, never just a name. An
   # agent that edits a migration, adds a new one, or swaps in an older body
@@ -229,19 +248,21 @@ log "validated $(printf '%s' "$validated" | grep -c .) migration(s) against the 
 
 # --- phase 2: owner credential, owner-only file on this host ----------------
 
-# A symlinked credential file would pass a mode check while its CONTENT comes
-# from wherever the link points — i.e. the owner DB URL this helper is about to
-# use could be chosen by whoever could create the link.
+# The root helper must never evaluate deploy-user-writable shell. The credential
+# therefore lives under the root-owned trust path, not under STATE_DIR, and is
+# parsed as one exact data record rather than sourced as a shell script.
 [ ! -h "$ENV_FILE" ] || die "$ENV_FILE is a symlink — the owner credential must be a real file"
 perms="$(file_mode "$ENV_FILE")"
 [ "$perms" = "600" ] || die "$ENV_FILE has mode $perms, expected 600"
-
-set -a
-# shellcheck disable=SC1090
-. "$ENV_FILE"
-set +a
-URL="${MIGRATION_DATABASE_URL:-}"
-[ -n "$URL" ] || die "MIGRATION_DATABASE_URL missing in $ENV_FILE"
+if [ "$TRUST_DIR" = "$DEFAULT_TRUST_DIR" ]; then
+  assert_trusted_path "$ENV_FILE"
+fi
+record_count="$(grep -c '^MIGRATION_DATABASE_URL=' "$ENV_FILE" || true)"
+[ "$record_count" = "1" ] || die "$ENV_FILE must contain exactly one MIGRATION_DATABASE_URL record"
+unexpected_count="$(awk '!/^[[:space:]]*(#|$)/ && $0 !~ /^MIGRATION_DATABASE_URL=/ {n++} END {print n+0}' "$ENV_FILE")"
+[ "$unexpected_count" = "0" ] || die "$ENV_FILE contains unexpected executable or non-data content"
+URL="$(sed -n 's/^MIGRATION_DATABASE_URL=//p' "$ENV_FILE")"
+[ -n "$URL" ] || die "MIGRATION_DATABASE_URL is empty in $ENV_FILE"
 case "$URL" in
   postgresql://*|postgres://*) : ;;
   *) die "MIGRATION_DATABASE_URL is not a postgres:// URL" ;;
@@ -309,6 +330,8 @@ while IFS=' ' read -r tag hash; do
   fi
 
   log "applying $tag"
+  file="$SNAPSHOT_DIR/$tag.sql"
+  [ -r "$file" ] || die "validated snapshot for migration $tag is missing"
   # The migration text is streamed on stdin inside the transaction (the guest
   # must not receive the login home — a bind-mount under the state tree would
   # arrive empty, see the psql_in comment above); the bookkeeping values are

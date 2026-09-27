@@ -38,7 +38,7 @@ an unsubstituted copy fails loudly instead of behaving like a production
 component.
 
 Why it had to change: the previous version honoured `TRUST_DIR`,
-`MIGRATE_RUNNER`, `APPROVALS_FILE`, `DOCKER_BIN`, `DOCKER_CONTEXT`, `PSQL_IMAGE`,
+`MIGRATE_RUNNER`, `APPROVALS_FILE`, `DOCKER_BIN`, `DOCKER_CONTEXT`, `DOCKER_HOST`, `PSQL_IMAGE`,
 `DB_NETWORK`, `STATE_DIR`, `GATE_REPO`, `VERIFY_ONLY`, `REF_CHECK_ONLY` … and the
 migration runner reads the owner credential, exports `PGPASSWORD` and then starts
 a container. A caller able to set the environment could therefore point
@@ -72,9 +72,11 @@ by any caller, variable or flag.
 ### What is still caller-influenced
 
 Honest inventory for the production path: the commit SHA (the sole argument, and
-validated), the invoking user's `SSH_ORIGINAL_COMMAND` (validated), and the
-contents of the deploy user's state directory (mode 600, owner-only). Nothing
-else — see § "Verification" for the negative tests that assert this. The gate's
+validated), the invoking user's `SSH_ORIGINAL_COMMAND` (validated), the exact
+runtime-repository bytes at that commit, and the contents of the deploy user's
+state directory (mode 600, owner-only). The root helper additionally reads only
+the root-owned credential and approval file below the trust directory. See §
+"Verification" for the negative tests that assert these boundaries. The gate's
 uid must be the account named by the installed `__DEPLOY_USER__` (the uid itself
 is resolved by the OS, never written down); a copy invoked as any other user
 refuses before it reads or acts on anything.
@@ -87,6 +89,7 @@ refuses before it reads or acts on anything.
 | `deploy-gate.sh` | `/usr/local/libexec/studio-deploy/<slug>-deploy-gate` (root:wheel 0755) | The whole deploy: ref binding → approval binding → approved migration → trigger → poll → verify app+commit+health |
 | `migrate-runner.sh` | `/usr/local/libexec/studio-deploy/<slug>-migrate-runner` (root:wheel 0755) | Applies owner migrations, but only content the operator approved. Takes **no arguments**; reached through `sudo -n` from the gate |
 | `verify-container.sh` | `/usr/local/libexec/studio-deploy/<slug>-verify-container` (root:wheel 0755) | Read-only container facts (`ps`/`inspect`) for the pinned app. Takes **no arguments** and returns facts, never a verdict; the binding stays in the gate |
+| Owner DB credential | `/usr/local/libexec/studio-deploy/credentials/<slug>.env` (root:wheel 0600) | Exactly one `MIGRATION_DATABASE_URL=postgresql://…` data record; never sourced as shell and never deploy-user-owned |
 | `find-approvals.sh` | (run from the checkout, not installed) | Reviews a migration set: tag, file and hash side by side |
 | `verify-approvals.sh` | (run from the checkout, not installed) | Independent check of a proposed approval list (recomputes hashes with `/usr/bin/shasum`) |
 | `print-approvals.sh` | (run from the checkout, not installed) | Convenience wrapper over `find-approvals.sh --for-install` |
@@ -102,6 +105,10 @@ executed one.
 - The runner validates the **whole** migration set — every journal entry present,
   every content hash listed — **before** the first byte reaches the database.
   A refused set has therefore touched nothing.
+- It snapshots every validated SQL file into a root-owned private directory,
+  hashes that snapshot and later streams the same per-tag bytes. This closes both
+  the validate/open race against the deploy-user-owned checkout and the earlier
+  stale-loop-variable bug that could stream the last SQL file for every tag.
 - A new migration does not run with owner rights until a human has added its
   tag and the sha256 of its exact content. Adding a migration, editing one, or
   swapping in an older body all change the hash and are refused.
@@ -223,9 +230,13 @@ there and not in the login account.
 
 ## The dedicated deploy user (S0-13)
 
-**Designed and asserted offline; NOT created on any host.** See
-`the unpublished deploy-user review` for the full design and
-the ordered owner steps.
+Installed on the host on 2026-09-27 and proven through one complete live deploy.
+An independent re-review found two migration-runner defects afterward; the
+corrected source in this directory therefore still requires an owner-reviewed
+re-install and a fresh live migration proof. See
+`the unpublished deploy-user review` for the ownership model
+and `the unpublished cutover review` for the
+remediation status.
 
 The forced command runs as whichever uid owns the `authorized_keys` entry. While
 that was the login user, mode `600` on `migrate.env` protected nothing: every
@@ -269,7 +280,6 @@ form so sudo refuses argv:
 studio-deploy ALL=(root) NOPASSWD: /usr/local/libexec/studio-deploy/<slug>-migrate-runner ""
 studio-deploy ALL=(root) NOPASSWD: /usr/local/libexec/studio-deploy/<slug>-verify-container ""
 ```
-```
 
 ## Installation (owner step — needs root on the host)
 
@@ -302,6 +312,7 @@ done
 
 # 1. trusted components
 sudo install -d -m 0755 /usr/local/libexec/studio-deploy
+sudo install -d -m 0700 -o root -g wheel /usr/local/libexec/studio-deploy/credentials
 sudo install -m 0755 -o root -g wheel "$SUBST/deploy-gate.sh"       /usr/local/libexec/studio-deploy/ua-smoke-deploy-gate
 sudo install -m 0755 -o root -g wheel "$SUBST/migrate-runner.sh"    /usr/local/libexec/studio-deploy/ua-smoke-migrate-runner
 sudo install -m 0755 -o root -g wheel "$SUBST/verify-container.sh"  /usr/local/libexec/studio-deploy/ua-smoke-verify-container
@@ -325,9 +336,24 @@ sudo install -d -m 0755 /usr/local/libexec/studio-deploy/approved-migrations
 sudo install -m 0644 -o root -g wheel /tmp/proposed.txt \
   /usr/local/libexec/studio-deploy/approved-migrations/ua-smoke.txt
 
+# 2a. owner DB credential — source file prepared privately by the owner;
+#     exactly one MIGRATION_DATABASE_URL=postgresql://... record, no shell code
+sudo install -m 0600 -o root -g wheel /private/path/ua-smoke-migrate.env \
+  /usr/local/libexec/studio-deploy/credentials/ua-smoke.env
+
 # 3. forced command (single line) in the DEPLOY USER's authorized_keys
 #   owner <deploy-user>:<deploy-group>, mode 600
 #   command="/usr/local/bin/ua-smoke-deploy-hook",restrict ssh-ed25519 AAAA... ci@github
+```
+
+For a fresh account install, macOS must also allow the hidden account through
+the SSH service ACL, and the clone must be created with the deploy user's home
+and a readable working directory:
+
+```sh
+sudo dseditgroup -o edit -a studio-deploy -t user com.apple.access_ssh
+(cd /tmp && sudo -H -u studio-deploy git clone <read-only-url> \
+  /var/studio-deploy/state/ua-smoke/deploy-clone)
 ```
 
 ### Choosing `__DOCKER_BIN__` — install a root-owned copy
@@ -401,10 +427,11 @@ boundary is only as good as the uids around it.
 | Dedicated `ci`/`deploy` user | none exists yet |
 | Login user's sudo | `(ALL) ALL` with **password required** — but see the blocker below: one NOPASSWD devbox rule targets a **login-user-writable** binary, so the login uid reaches root without a password |
 
-Target (designed here, not yet created): the deploy path runs as
-`studio-deploy`. Then `migrate.env` and `coolify_token` — mode 600, owned by
-`studio-deploy` — are unreadable to `login-user` (the login uid), because Unix permissions
-act against a different uid. That is the whole separation. The uid of
+Current target model (account installed 2026-09-27): the deploy path runs as
+`studio-deploy`. The Coolify token is mode 600 and owned by `studio-deploy`; the
+more privileged owner DB credential is root-owned mode 600 under the trust
+directory and is read only by the root migration helper. Both are unreadable to
+`login-user` (the login uid) through ordinary file permissions. The uid of
 `studio-deploy` is whatever the OS assigns at install time; the separation
 property depends on it differing from the login uid, not on any particular value.
 
@@ -421,8 +448,9 @@ measured facts bound it, and neither is closed by anything in this directory:
 1. **The agent's uid controls the Docker daemon that runs the production
    database.** The socket is `login-user:login-group` 600 and every agent process runs as
    `login-user`, so the owner DB credential is not the only way to the data — whoever
-   holds the socket reaches the Postgres container directly. Moving `migrate.env`
-   to `studio-deploy` therefore raises the cost of reading a *file*; it does not
+   holds the socket reaches the Postgres container directly. Moving the owner DB
+   credential under the root-owned trust directory therefore raises the cost of
+   reading a *file*; it does not
    make the database unreachable from a compromised agent. By the same argument,
    `<slug>-verify-container` is an honest proof against *Coolify* misreporting a
    deploy, but **not** against an adversary who controls the daemon: container
@@ -447,7 +475,8 @@ boundary the design language implies.
 Smaller residuals: the deploy user can still invoke its two argument-free helpers
 — that is what they are for — and the sudoers empty-argument form is a sudo(8)
 behaviour that the owner must verify with `visudo -cf` at install time. Nothing
-here claims the uid separation is installed until the owner steps have run.
+here claims the corrected runner is installed until the owner has reviewed and
+promoted this revision.
 
 ## Verification (no live mutation)
 
@@ -471,10 +500,12 @@ helper calls are exercised through a sudo stand-in (`tests/lib/fake-sudo.sh`), s
 the call shape is tested without root — and case I asserts a refused call fails
 closed.
 
-Measured 2026-09-22 after the trusted-path fix (counting `^PASS`): `ref-binding`
+Measured 2026-09-27 after the independent cutover re-review (counting `^PASS`): `ref-binding`
 **11/11**, `verify-binding` **10/10**, `hook-validation` **24/24**,
-`migration-approval` **16/16**, `approval-binding` **12/12**, `deploy-user`
-**13/13**, `trusted-path` **15/15** — **101/101, 0 FAIL**.
+`migration-approval` **19/19**, `approval-binding` **12/12**, `deploy-user`
+**13/13**, `trusted-path` **15/15** — **104/104, 0 FAIL**. The three added
+migration cases cover a non-evaluated credential file, exact per-tag SQL stdin,
+and the corrected fixture body handling.
 
 `trusted-path` case A asserts that the shared trusted-path block is
 byte-identical in all four components (it is inlined on purpose — each component
@@ -485,15 +516,17 @@ its target.
 
 ## Open items
 
-- Installation on the host needs root (`sudo`), which the agent does not hold —
-  this remains an owner step.
-- Creating the dedicated `studio-deploy` account, moving the state files under
-  `/var/studio-deploy/state/ua-smoke/`, writing its `authorized_keys` and
-  installing `/etc/sudoers.d/studio-deploy` are owner steps too, and the design
-  is asserted offline (`tests/deploy-user.sh`) but not installed. The ordered
-  list is in `the unpublished deploy-user review` § 6.
-- The CI key pair, the pinned host key/fingerprint secrets and the
-  `authorized_keys` entry are owner steps too.
+- The account, forced command, sudoers rules, CI key path and original trusted
+  components were installed on 2026-09-27. The corrected gate and runner in this
+  revision are **not yet installed**; owner review and `sudo install` remain.
+- Move the owner DB credential out of deploy-user state to
+  `/usr/local/libexec/studio-deploy/credentials/<slug>.env` as root:wheel 0600,
+  then remove the superseded state copy after the corrected runner is live.
+- Re-run the gate with a fresh pending approved migration to prove that each tag
+  receives its own SQL bytes; the 2026-09-27 live run skipped all five existing
+  migrations and therefore could not expose the stale-file defect.
+- The original S0-13 live acceptance gaps C2, C3, C6-API and the two-client
+  rate-limit proof remain open; this deploy-chain evidence does not close them.
 - `--verify-only <gate> <full-sha>` answers "is what is running actually this app
   at this commit?" at any time, reads no credential, and mutates nothing.
 - The sudoers empty-argument form (`""`) is a sudo(8) behaviour: validate the

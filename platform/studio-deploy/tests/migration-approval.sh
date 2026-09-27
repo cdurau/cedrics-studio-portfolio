@@ -38,11 +38,14 @@
 #   G) an empty approvals list                   -> REJECT, no database contact
 #   H) a missing approvals file                  -> REJECT
 #   I) an owner env-file that is not 600         -> REJECT, no database contact
+#   I2) executable/non-data credential content   -> REJECT without evaluation
 #   J) an env-file path as an argument            -> REJECT (no arguments accepted)
 #   K) an approvals path as an argument           -> REJECT (no arguments accepted)
 #   L) a migrations tree as an argument           -> REJECT (no arguments accepted)
 #   M) any extra argument                         -> REJECT (no arguments accepted)
 #   N) PSQL_IMAGE/DOCKER_CONTEXT/DB_NETWORK in the environment are ignored
+#   N2) migration content is streamed, not bind-mounted
+#   N3) each pending tag receives its own exact approved SQL body
 #   O) the clone HEAD is not the approved commit  -> REJECT, no database contact
 set -euo pipefail
 
@@ -72,7 +75,7 @@ RUN_LOG="$WORK/runs.log"
 TRUST="$WORK/trust"
 STATE="$WORK/state"
 CLONE="$WORK/deploy-clone"
-mkdir -p "$TRUST/approved-migrations" "$STATE" "$CLONE/apps/ua-smoke/drizzle/migrations/meta"
+mkdir -p "$TRUST/approved-migrations" "$TRUST/credentials" "$STATE" "$CLONE/apps/ua-smoke/drizzle/migrations/meta"
 
 git -C "$CLONE" init -q
 GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
@@ -83,7 +86,7 @@ APPROVED_COMMIT="$(git -C "$CLONE" rev-parse HEAD)"
 RUNNER="$WORK/ua-smoke-migrate-runner"
 build_runner "$RUNNER" ua-smoke "$TRUST" "$STATE" "$CLONE" "$FAKE"
 
-ENV_FILE="$STATE/migrate.env"
+ENV_FILE="$TRUST/credentials/ua-smoke.env"
 cat > "$ENV_FILE" <<'ENV'
 MIGRATION_DATABASE_URL=postgresql://owner:***@127.0.0.1:5432/db
 ENV
@@ -92,10 +95,11 @@ chmod 600 "$ENV_FILE"
 APPROVALS="$TRUST/approved-migrations/ua-smoke.txt"
 MIG="$CLONE/apps/ua-smoke/drizzle/migrations"
 
-write_case() { # write_case <sql-body-for-0001>
+write_case() { # write_case <case-label> <sql-body-for-0001>
+  local body="$2"
   rm -rf "$MIG"; mkdir -p "$MIG/meta"
   printf 'CREATE TABLE t0 (id int);\n' > "$MIG/0000_init.sql"
-  printf '%s\n' "$1" > "$MIG/0001_next.sql"
+  printf '%s\n' "$body" > "$MIG/0001_next.sql"
   cat > "$MIG/meta/_journal.json" <<JSON
 {"version":"7","dialect":"postgresql","entries":[
  {"idx":0,"version":"7","when":1,"tag":"0000_init"},
@@ -241,6 +245,17 @@ approve_all
 expect REJECT "I) a group/world-readable owner env-file is refused" "expected 600"
 chmod 600 "$ENV_FILE"
 
+# I2) The root helper parses credential data; it must never source shell owned by
+# another principal. An extra command-like record is refused and never executed.
+MARKER="$WORK/must-not-exist"
+printf 'MIGRATION_DATABASE_URL=postgresql://owner:***@127.0.0.1:5432/db\ntouch %s\n' "$MARKER" > "$ENV_FILE"
+expect REJECT "I2) executable content in the credential file is refused" "unexpected executable or non-data content"
+if [ -e "$MARKER" ]; then
+  echo "FAIL  I2) credential content was evaluated as shell" >&2; fail=1
+fi
+printf 'MIGRATION_DATABASE_URL=postgresql://owner:***@127.0.0.1:5432/db\n' > "$ENV_FILE"
+chmod 600 "$ENV_FILE"
+
 echo
 echo "== the runner takes no arguments at all (S0-13) =="
 # Under the deploy-user model the runner is reached as root through sudo with the
@@ -354,6 +369,32 @@ elif printf '%s' "$first_run" | grep -qE ':/migrations|migrations:ro' \
   printf 'first run argv: %s\n' "$first_run" >&2; fail=1
 else
   echo "PASS  N2) migration content is streamed (no bind-mount in the credential-path argv)"
+fi
+
+# N3) Regression for the stdin conversion: the validation loop previously left
+# `file` pointing at the final journal entry, so every pending tag received the
+# last migration's SQL while its own tag/hash was journaled. Capture the exact
+# stdin for two pending migrations and assert the tag -> body association.
+write_case N3 "CREATE TABLE only_in_second (id int);"
+approve_all
+STDIN_DIR="$WORK/migration-stdin"
+rm -rf "$STDIN_DIR"
+: > "$RUN_LOG"
+set +e
+out="$(FAKE_DOCKER_STDIN_DIR="$STDIN_DIR" run_runner)"; rc=$?
+set -e
+if [ "$rc" -ne 0 ]; then
+  echo "FAIL  N3) runner failed while capturing migration stdin (rc=$rc)" >&2
+  printf '%s\n' "$out" | tail -3 >&2; fail=1
+elif [ ! -f "$STDIN_DIR/0000_init.sql" ] || [ ! -f "$STDIN_DIR/0001_next.sql" ]; then
+  echo "FAIL  N3) did not capture one SQL stream per pending tag" >&2; fail=1
+elif ! grep -q 'CREATE TABLE t0' "$STDIN_DIR/0000_init.sql" \
+     || grep -q 'only_in_second' "$STDIN_DIR/0000_init.sql" \
+     || ! grep -q 'CREATE TABLE only_in_second' "$STDIN_DIR/0001_next.sql" \
+     || grep -q 'CREATE TABLE t0' "$STDIN_DIR/0001_next.sql"; then
+  echo "FAIL  N3) a tag received another migration's SQL body" >&2; fail=1
+else
+  echo "PASS  N3) every pending tag receives its own exact approved SQL body"
 fi
 
 echo

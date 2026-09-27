@@ -83,6 +83,18 @@ case "$cmd" in
     ;;
 
   run)
+    # Migration-content tests capture only apply invocations. Setup/query calls
+    # have no `tag=...` psql variable and must not consume the runner's stdin.
+    if [ -n "${FAKE_DOCKER_STDIN_DIR:-}" ]; then
+      apply_tag=""
+      for arg in "${args[@]}"; do
+        case "$arg" in tag=*) apply_tag="${arg#tag=}" ;; esac
+      done
+      if [ -n "$apply_tag" ]; then
+        mkdir -p "$FAKE_DOCKER_STDIN_DIR"
+        cat > "$FAKE_DOCKER_STDIN_DIR/$apply_tag.sql"
+      fi
+    fi
     if [ -n "${FAKE_DOCKER_LOG:-}" ]; then
       printf '%s\n' "${ORIG_ARGS[*]}" >> "$FAKE_DOCKER_LOG"
       exit 0

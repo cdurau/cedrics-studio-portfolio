@@ -242,7 +242,7 @@ fi
 echo
 echo "== L: the owner credential file =="
 
-# The runner reads migrate.env only after the whole migration set has validated,
+# The runner reads its root-only credential only after the whole migration set has validated,
 # so the fixture has to be complete or this would stop earlier and prove nothing
 # about the credential file.
 MIG="$CLONE/apps/$SLUG/drizzle/migrations"
@@ -254,26 +254,27 @@ MIG="$CLONE/apps/$SLUG/drizzle/migrations"
 # The real credential lives elsewhere; the installed path is only a link to it.
 printf 'MIGRATION_DATABASE_URL=postgresql://owner:pw@127.0.0.1:5432/db\n' > "$WORK/elsewhere.env"
 chmod 600 "$WORK/elsewhere.env"
-ln -s "$WORK/elsewhere.env" "$STATE/migrate.env"
+mkdir -p "$TRUST/credentials"
+ln -s "$WORK/elsewhere.env" "$TRUST/credentials/$SLUG.env"
 
 R_ENV="$WORK/runner-env"
 build_runner "$R_ENV" "$SLUG" "$TRUST" "$STATE" "$CLONE" "$FAKE"
 set +e
 out="$(FAKE_DOCKER_SCENARIO=/dev/null FAKE_DOCKER_LOG="$WORK/runs.log" "$R_ENV" 2>&1)"; rc=$?
 set -e
-if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "migrate.env is a symlink"; then
+if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "$SLUG.env is a symlink"; then
   pass "L) migrate-runner refuses a symlinked owner credential file"
 else
-  bad "L) a symlinked migrate.env was accepted (rc=$rc): $(printf '%s' "$out" | tail -3)"
+  bad "L) a symlinked root credential was accepted (rc=$rc): $(printf '%s' "$out" | tail -3)"
 fi
-rm -f "$STATE/migrate.env"
+rm -f "$TRUST/credentials/$SLUG.env"
 
 echo
 echo "== M-O: the gate's components and state, and the hook's gate =="
 
-printf 'MIGRATION_DATABASE_URL=postgresql://owner:pw@127.0.0.1:5432/db\n' > "$STATE/migrate.env"
+printf 'MIGRATION_DATABASE_URL=postgresql://owner:pw@127.0.0.1:5432/db\n' > "$TRUST/credentials/$SLUG.env"
 printf 'placeholder-token\n' > "$STATE/coolify_token"
-chmod 600 "$STATE/migrate.env" "$STATE/coolify_token" "$STATE/coolify_uuid.txt"
+chmod 600 "$TRUST/credentials/$SLUG.env" "$STATE/coolify_token" "$STATE/coolify_uuid.txt"
 stage_helpers "$TRUST" "$STATE" "$CLONE" "$FAKE" "$SLUG"
 # The tip of the allowed branch: the only sha the gate's ref binding accepts.
 SHA40="$FIX_TIP_SHA"

@@ -52,7 +52,7 @@ OTHER_USER="no-such-deploy-account"
 TRUST="$WORK/trust"
 STATE="$WORK/state"
 CLONE="$WORK/deploy-clone"
-mkdir -p "$TRUST/approved-migrations" "$STATE" "$CLONE/apps/$SLUG/drizzle/migrations/meta"
+mkdir -p "$TRUST/approved-migrations" "$TRUST/credentials" "$STATE" "$CLONE/apps/$SLUG/drizzle/migrations/meta"
 
 # A tiny git clone so the gate's ref/checkout logic has something real.
 git -C "$CLONE" init -q
@@ -64,8 +64,9 @@ APP_UUID="bo95tvgzq7mkhjx0syelwir5"
 printf '%s\n' "$APP_UUID" > "$STATE/coolify_uuid.txt"
 printf '13\n' > "$STATE/coolify_app_id.txt"
 printf 'placeholder-token\n' > "$STATE/coolify_token"
-printf 'MIGRATION_DATABASE_URL=postgresql://owner:***@127.0.0.1:5432/db\n' > "$STATE/migrate.env"
-chmod 600 "$STATE/migrate.env" "$STATE/coolify_token"
+MIGRATE_ENV="$TRUST/credentials/$SLUG.env"
+printf 'MIGRATION_DATABASE_URL=postgresql://owner:***@127.0.0.1:5432/db\n' > "$MIGRATE_ENV"
+chmod 600 "$MIGRATE_ENV" "$STATE/coolify_token"
 
 SCEN="$WORK/scenario.tsv"
 printf 'c-ok\t%s\t13\t%s:0123456789abcdef0123456789abcdef01234567\t\thealthy\n' "$APP_UUID" "$APP_UUID" > "$SCEN"
@@ -111,8 +112,8 @@ build_gate "$GATE" "$SLUG" "$TRUST" "$STATE" "$CLONE" "$FAKE" 1 1 "$DEAD_COOLIFY
 
 SHA40="0123456789abcdef0123456789abcdef01234567"
 
-# C) mode 600 is required for the credential files. The runner reads
-# migrate.env in its last phase, AFTER the migration set has validated — so a
+# C) mode 600 is required for the root-owned credential file. The runner reads
+# it in its last phase, AFTER the migration set has validated — so a
 # valid approvals file and migration tree must exist, otherwise the run would
 # stop earlier for an unrelated reason and prove nothing about the mode.
 MIG="$CLONE/apps/$SLUG/drizzle/migrations"
@@ -126,7 +127,7 @@ JSON
   printf '# commit %s\n' "$(git -C "$CLONE" rev-parse HEAD)"
   printf '%s %s\n' 0000_init "$(sha256_file "$MIG/0000_init.sql")"
 } > "$TRUST/approved-migrations/$SLUG.txt"
-chmod 644 "$STATE/migrate.env"
+chmod 644 "$MIGRATE_ENV"
 set +e
 out="$(FAKE_DOCKER_SCENARIO="$SCEN" FAKE_DOCKER_LOG="$WORK/runs.log" \
   "$TRUST/$SLUG-migrate-runner" 2>&1)"; rc=$?
@@ -136,7 +137,7 @@ if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "expected 600"; then
 else
   bad "C) a 644 owner env-file was accepted (rc=$rc)"; printf '%s\n' "$out" | tail -3 >&2
 fi
-chmod 600 "$STATE/migrate.env"
+chmod 600 "$MIGRATE_ENV"
 
 # D) Ownership on the production trust path: the trusted binary must be
 # root-owned. A Docker binary owned by the login user is exactly the situation
@@ -163,7 +164,6 @@ UNREADABLE="$WORK/unreadable-state"
 mkdir -p "$UNREADABLE"
 printf '%s\n' "$APP_UUID" > "$UNREADABLE/coolify_uuid.txt"
 printf 'placeholder-token\n' > "$UNREADABLE/coolify_token"
-printf 'MIGRATION_DATABASE_URL=postgresql://owner:***@127.0.0.1:5432/db\n' > "$UNREADABLE/migrate.env"
 chmod 600 "$UNREADABLE"/*
 chmod 000 "$UNREADABLE/coolify_uuid.txt"
 VERIFY_UR="$WORK/verify-unreadable"

@@ -201,9 +201,8 @@ STUB
 chmod 755 "$VERIFY_CONTAINER"
 
 printf '%s\n' "bo95tvgzq7mkhjx0syelwir5" > "$STATE/coolify_uuid.txt"
-printf 'MIGRATION_DATABASE_URL=postgresql://owner:***@127.0.0.1:5432/db\n' > "$STATE/migrate.env"
 : > "$STATE/coolify_token"
-chmod 600 "$STATE/migrate.env" "$STATE/coolify_uuid.txt" "$STATE/coolify_token"
+chmod 600 "$STATE/coolify_uuid.txt" "$STATE/coolify_token"
 
 GATE="$WORK/$SLUG-deploy-gate"
 build_gate "$GATE" "$SLUG" "$TRUST" "$STATE" "$fixture_clone" "$NODOCKER" 1 1

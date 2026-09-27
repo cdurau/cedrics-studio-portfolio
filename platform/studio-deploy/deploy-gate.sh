@@ -72,7 +72,8 @@
 # --verify-only reads the app UUID (not a secret) and no credential whatsoever,
 # so it stays usable without one.
 #
-# State: <STATE_DIR>/{coolify_uuid.txt,coolify_app_id.txt,coolify_token,migrate.env}
+# Deploy-user state: <STATE_DIR>/{coolify_uuid.txt,coolify_app_id.txt,coolify_token}
+# Root-only migration credential: <TRUST_DIR>/credentials/<slug>.env
 set -euo pipefail
 
 # --- the literal production trust path (substituted once at install) ---------
@@ -94,7 +95,6 @@ GATE_REF="migration/coolify-v5"
 MIGRATE_RUNNER="$TRUST_DIR/${SLUG}-migrate-runner"
 VERIFY_CONTAINER="$TRUST_DIR/${SLUG}-verify-container"
 APPROVALS_FILE="$TRUST_DIR/approved-migrations/${SLUG}.txt"
-MIGRATE_ENV="$STATE_DIR/migrate.env"
 APP_UUID_FILE="$STATE_DIR/coolify_uuid.txt"
 APP_ID_FILE="$STATE_DIR/coolify_app_id.txt"
 TOKEN_FILE="$STATE_DIR/coolify_token"
@@ -200,7 +200,7 @@ export HOME
 # on every run, drowning a real override in noise). env -i from the hook passes
 # nothing, so a production run is silent; a caller who exports one of these names
 # is reported by name.
-OVERRIDE_NAMES="APP_SLUG TRUST_DIR MIGRATE_RUNNER VERIFY_CONTAINER APPROVALS_FILE PSQL_IMAGE DOCKER_BIN DOCKER_CONTEXT DB_NETWORK STATE_DIR GATE_REPO GATE_REF COOLIFY_API VERIFY_ONLY REF_CHECK_ONLY DEPLOY_TIMEOUT HEALTH_TIMEOUT POLL_INTERVAL DEPLOY_USER SUDO_BIN"
+OVERRIDE_NAMES="APP_SLUG TRUST_DIR MIGRATE_RUNNER VERIFY_CONTAINER APPROVALS_FILE PSQL_IMAGE DOCKER_BIN DOCKER_HOST DOCKER_CONTEXT DB_NETWORK STATE_DIR GATE_REPO GATE_REF COOLIFY_API VERIFY_ONLY REF_CHECK_ONLY DEPLOY_TIMEOUT HEALTH_TIMEOUT POLL_INTERVAL DEPLOY_USER SUDO_BIN"
 seen=""
 for n in $OVERRIDE_NAMES; do
   case "$(printenv "$n")" in
@@ -316,7 +316,12 @@ else
   # uid this gate runs as, not merely mode-600. A 600 file owned by another uid is
   # either unreadable (and then the run must fail loudly) or, worse, a hint that
   # the state was moved from a different account without re-owning it.
-  for f in "$MIGRATE_ENV" "$APP_UUID_FILE" "$TOKEN_FILE"; do
+  # The owner DB credential is deliberately NOT deploy-user state and is not
+  # readable here. Only the root migration runner reads its root-owned credential
+  # below TRUST_DIR; keeping it out of this loop prevents the deploy account from
+  # turning an argument-free sudo helper into a root shell through a writable env
+  # file.
+  for f in "$APP_UUID_FILE" "$TOKEN_FILE"; do
     [ -r "$f" ] || die "missing or unreadable state file $f"
     # Ownership and mode describe the LINK unless the link is refused: a state
     # file that is a symlink has its content chosen by whoever made the link.

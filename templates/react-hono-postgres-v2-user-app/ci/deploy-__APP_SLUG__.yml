@@ -78,6 +78,9 @@ concurrency:
 
 permissions:
   contents: read
+  # tailscale/github-action exchanges GitHub's OIDC token for the ephemeral
+  # tag:ci node. Without this permission ACTIONS_ID_TOKEN_REQUEST_URL is absent.
+  id-token: write
 
 jobs:
   deploy:
