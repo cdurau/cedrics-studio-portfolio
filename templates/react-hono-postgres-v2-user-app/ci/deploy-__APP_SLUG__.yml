@@ -148,7 +148,7 @@ jobs:
               -o IdentitiesOnly=yes \
               -o StrictHostKeyChecking=yes \
               -o BatchMode=yes \
-              "ci@${DEPLOY_HOOK_HOST}" "${GITHUB_SHA}"
+              "studio-deploy@${DEPLOY_HOOK_HOST}" "${GITHUB_SHA}"
 
       - name: Post-deploy acceptance (live origin)
         # Read-only check from the runner: does the origin actually serve the app
