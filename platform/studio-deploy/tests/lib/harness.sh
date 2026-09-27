@@ -107,12 +107,14 @@ build_gate() { # build_gate <dst> <slug> <trust_dir> <state_dir> <clone> [docker
 build_runner() { # build_runner <dst> <slug> <trust_dir> <state_dir> <clone> <docker_bin> [image]
   subst_script "$SRC_RUNNER" "$1" \
     "APP_SLUG=$2" "TRUST_DIR=$3" "STATE_DIR=$4" "GATE_REPO=$5" "DOCKER_BIN=$6" \
+    "DOCKER_HOST=${FAKE_DOCKER_HOST:-unix:///run/fake-docker.sock}" \
     "PSQL_IMAGE=${7:-$PINNED_PSQL_IMAGE}"
 }
 
 build_verify_container() { # build_verify_container <dst> <slug> <trust_dir> <state_dir> <docker_bin>
   subst_script "$SRC_VERIFY" "$1" \
-    "APP_SLUG=$2" "TRUST_DIR=$3" "STATE_DIR=$4" "DOCKER_BIN=$5"
+    "APP_SLUG=$2" "TRUST_DIR=$3" "STATE_DIR=$4" "DOCKER_BIN=$5" \
+    "DOCKER_HOST=${FAKE_DOCKER_HOST:-unix:///fake.sock}"
 }
 
 build_hook() { # build_hook <dst> <slug> <trust_dir> <clone> [deploy_user]

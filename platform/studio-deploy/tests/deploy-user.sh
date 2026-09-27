@@ -144,7 +144,7 @@ chmod 600 "$STATE/migrate.env"
 VERIFY_PROD="$WORK/verify-prod"
 subst_script "$(dirname "$HERE")/verify-container.sh" "$VERIFY_PROD" \
   "APP_SLUG=$SLUG" "TRUST_DIR=/usr/local/libexec/studio-deploy" \
-  "STATE_DIR=$STATE" "DOCKER_BIN=$FAKE"
+  "STATE_DIR=$STATE" "DOCKER_BIN=$FAKE" "DOCKER_HOST=unix://$WORK/fake-docker.sock"
 set +e
 out="$(FAKE_DOCKER_SCENARIO="$SCEN" "$VERIFY_PROD" 2>&1)"; rc=$?
 set -e
@@ -168,7 +168,7 @@ chmod 600 "$UNREADABLE"/*
 chmod 000 "$UNREADABLE/coolify_uuid.txt"
 VERIFY_UR="$WORK/verify-unreadable"
 subst_script "$(dirname "$HERE")/verify-container.sh" "$VERIFY_UR" \
-  "APP_SLUG=$SLUG" "TRUST_DIR=$TRUST" "STATE_DIR=$UNREADABLE" "DOCKER_BIN=$FAKE"
+  "APP_SLUG=$SLUG" "TRUST_DIR=$TRUST" "STATE_DIR=$UNREADABLE" "DOCKER_BIN=$FAKE" "DOCKER_HOST=unix://$WORK/fake-docker.sock"
 set +e
 out="$(FAKE_DOCKER_SCENARIO="$SCEN" "$VERIFY_UR" 2>&1)"; rc=$?
 set -e

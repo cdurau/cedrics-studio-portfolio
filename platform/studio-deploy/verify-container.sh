@@ -43,7 +43,14 @@ TRUST_DIR="__TRUST_DIR__"
 STATE_DIR="__STATE_DIR__"
 DOCKER_BIN="__DOCKER_BIN__"
 
-DOCKER_CONTEXT="devbox"
+# The socket is pinned as an install-time LITERAL, passed with docker's -H flag
+# (which overrides any DOCKER_HOST in the environment). A `--context devbox` pin
+# resolves contexts under $HOME/.docker — under sudo that is the deploy user's
+# home, where the production context does not exist (measured live 2026-09-27:
+# `context "devbox": context not found`), and a context file there would be a
+# deploy-user-writable input to a root process — the same defect class as the
+# login-user-writable docker binary found on 2026-09-22.
+DOCKER_HOST="__DOCKER_HOST__"
 DEFAULT_TRUST_DIR="/usr/local/libexec/studio-deploy"
 
 APP_UUID_FILE="$STATE_DIR/coolify_uuid.txt"
@@ -94,7 +101,7 @@ assert_trusted_path() { # assert_trusted_path <absolute path>
 }
 
 # A source file that still carries a placeholder was never installed properly.
-case "$SLUG$TRUST_DIR$STATE_DIR$DOCKER_BIN" in
+case "$SLUG$TRUST_DIR$STATE_DIR$DOCKER_BIN$DOCKER_HOST" in
   *__*) die "unsubstituted placeholder — this is the canonical source, not an installed component" ;;
 esac
 
@@ -166,7 +173,7 @@ if [ -r "$APP_ID_FILE" ]; then
   esac
 fi
 
-d() { "$DOCKER_BIN" --context "$DOCKER_CONTEXT" "$@"; }
+d() { "$DOCKER_BIN" -H "$DOCKER_HOST" "$@"; }
 
 # --- print the facts, decide nothing ----------------------------------------
 # Output: one line per container carrying the pinned app's coolify.name label.

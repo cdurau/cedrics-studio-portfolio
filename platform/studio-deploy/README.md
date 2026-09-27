@@ -28,7 +28,8 @@ This is the rule that makes the rest of the design hold, so it is stated first:
 
 Every path, binary, image and bound the components use is a placeholder
 (`__APP_SLUG__`, `__TRUST_DIR__`, `__STATE_DIR__`, `__GATE_REPO__`,
-`__DOCKER_BIN__`, `__PSQL_IMAGE__`, `__COOLIFY_API__`, the three timeouts, and —
+`__DOCKER_BIN__`, `__DOCKER_HOST__`, `__PSQL_IMAGE__`, `__COOLIFY_API__`, the
+three timeouts, and —
 since S0-13 — `__DEPLOY_USER__` and `__SUDO_BIN__`) that the installing owner
 substitutes **exactly once**. The installed file reads no override;
 `deploy-gate.sh`, `deploy-hook.sh`, `migrate-runner.sh` and
@@ -290,6 +291,7 @@ for f in deploy-gate.sh deploy-hook.sh migrate-runner.sh verify-container.sh; do
     -e 's|__DEPLOY_USER__|studio-deploy|g' \
     -e 's|__SUDO_BIN__|/usr/bin/sudo|g' \
     -e 's|__DOCKER_BIN__|/usr/local/libexec/studio-deploy/docker|g' \
+    -e 's|__DOCKER_HOST__|unix:///var/run/docker.sock|g' \
     -e 's|__PSQL_IMAGE__|postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2|g' \
     -e 's|__COOLIFY_API__|http://localhost:8000/api/v1|g' \
     -e 's|__DEPLOY_TIMEOUT__|900|g' \

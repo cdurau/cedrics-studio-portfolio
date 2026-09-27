@@ -61,7 +61,14 @@ GATE_REPO="__GATE_REPO__"
 DOCKER_BIN="__DOCKER_BIN__"
 
 PSQL_IMAGE="__PSQL_IMAGE__"
-DOCKER_CONTEXT="devbox"
+# The socket is pinned as an install-time LITERAL, passed with docker's -H flag
+# (which overrides any DOCKER_HOST in the environment). A `--context devbox` pin
+# resolves contexts under $HOME/.docker — under sudo that is the deploy user's
+# home, where the production context does not exist (measured live 2026-09-27:
+# `context "devbox": context not found`), and a context file there would be a
+# deploy-user-writable input to a root process — the same defect class as the
+# login-user-writable docker binary found on 2026-09-22.
+DOCKER_HOST="__DOCKER_HOST__"
 DB_NETWORK="coolify"
 DEFAULT_TRUST_DIR="/usr/local/libexec/studio-deploy"
 
@@ -115,7 +122,7 @@ assert_trusted_path() { # assert_trusted_path <absolute path>
 }
 
 
-case "$SLUG$TRUST_DIR$STATE_DIR$GATE_REPO$DOCKER_BIN$PSQL_IMAGE" in
+case "$SLUG$TRUST_DIR$STATE_DIR$GATE_REPO$DOCKER_BIN$PSQL_IMAGE$DOCKER_HOST" in
   *__*) die "unsubstituted placeholder in the installed runner — this is the canonical source, not an installed component" ;;
 esac
 
@@ -264,7 +271,7 @@ export PGDATABASE="${PGDATABASE%%\?*}"
 # Streaming keeps the properties that mattered: the content arrives exactly as
 # hashed, inside the same transaction, and never on a command line.
 psql_in() { # psql_in [psql args...] — SQL arrives on stdin when needed
-  "$DOCKER_BIN" --context "$DOCKER_CONTEXT" run --rm -i --network "$DB_NETWORK" \
+  "$DOCKER_BIN" -H "$DOCKER_HOST" run --rm -i --network "$DB_NETWORK" \
     -e PGHOST -e PGPORT -e PGUSER -e PGPASSWORD -e PGDATABASE \
     --entrypoint psql "$PSQL_IMAGE" -v ON_ERROR_STOP=1 "$@"
 }

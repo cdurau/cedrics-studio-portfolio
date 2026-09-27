@@ -56,7 +56,10 @@ fail=0
 
 # Docker stand-in: a `run` proves the runner got as far as the database. With
 # FAKE_DOCKER_LOG set it records argv and succeeds, so a test can read back the
-# image/binary actually used.
+# image/binary actually used. FAKE_DOCKER_HOST is the socket URI the suites
+# substitute for __DOCKER_HOST__ (the -H pin); case N asserts the runner uses it
+# over any caller-provided DOCKER_HOST.
+FAKE_DOCKER_HOST="unix:///$WORK/fake-docker.sock"
 FAKE="$WORK/fake-docker"
 cp "$HERE/fake-docker.sh" "$FAKE"
 chmod 755 "$FAKE"
@@ -315,14 +318,14 @@ approve_all
 : > "$RUN_LOG"
 set +e
 out="$(FAKE_DOCKER_SCENARIO=/dev/null FAKE_DOCKER_LOG="$RUN_LOG" \
-  PSQL_IMAGE="attacker/evil:latest" DOCKER_CONTEXT="desktop-linux" DB_NETWORK="attacker-net" \
+  PSQL_IMAGE="attacker/evil:latest" DOCKER_HOST="unix:///attacker.sock" DOCKER_CONTEXT="desktop-linux" DB_NETWORK="attacker-net" \
   /bin/bash "$RUNNER" 2>&1)"; rc=$?
 set -e
 first_run="$(head -1 "$RUN_LOG" 2>/dev/null || true)"
 if printf '%s' "$first_run" | grep -q "$PINNED_PSQL_IMAGE" \
-   && printf '%s' "$first_run" | grep -q -- "--context devbox" \
+   && printf '%s' "$first_run" | grep -q -- "$FAKE_DOCKER_HOST" \
    && ! printf '%s' "$first_run" | grep -q "attacker"; then
-  echo "PASS  N) PSQL_IMAGE/DOCKER_CONTEXT/DB_NETWORK in the environment are ignored"
+  echo "PASS  N) PSQL_IMAGE/DOCKER_HOST/DOCKER_CONTEXT/DB_NETWORK in the environment are ignored"
 else
   echo "FAIL  N) an environment override reached the credential path" >&2
   printf 'first run argv: %s\n' "$first_run" >&2; fail=1

@@ -34,6 +34,7 @@ args=("$@")
 while [ "${#args[@]}" -gt 0 ]; do
   case "${args[0]}" in
     --context) args=("${args[@]:2}") ;;
+    -H) args=("${args[@]:2}") ;;
     *) break ;;
   esac
 done
