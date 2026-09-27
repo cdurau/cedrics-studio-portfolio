@@ -328,6 +328,31 @@ else
   printf 'first run argv: %s\n' "$first_run" >&2; fail=1
 fi
 
+# N2) measured 2026-09-27: the guest may not see that host path, so a bind-
+# mount under /var would arrive empty and the include step would fail closed;
+# mounting the login user's home would expose the separated files to containers.
+# The migration content therefore reaches psql through stdin — assert that the
+# first credential-path docker run reaches the database step and carries neither
+# the migrations tree nor a :/migrations mount point (psql's own -v variable
+# flags are not volume mounts and are fine).
+write_case N2 "CREATE TABLE t1 (id int);"
+approve_all
+: > "$RUN_LOG"
+set +e
+out="$(run_runner)"; rc=$?
+set -e
+first_run="$(head -1 "$RUN_LOG" 2>/dev/null || true)"
+if [ "$rc" -ne 0 ] || [ ! -s "$RUN_LOG" ]; then
+  echo "FAIL  N2) the runner did not reach the database step (rc=$rc)" >&2
+  printf '%s\n' "$out" | tail -3 >&2; fail=1
+elif printf '%s' "$first_run" | grep -qE ':/migrations|migrations:ro' \
+     || printf '%s' "$first_run" | grep -qF -- "$MIG"; then
+  echo "FAIL  N2) the migration docker run still bind-mounts the migrations tree" >&2
+  printf 'first run argv: %s\n' "$first_run" >&2; fail=1
+else
+  echo "PASS  N2) migration content is streamed (no bind-mount in the credential-path argv)"
+fi
+
 echo
 echo "== the clone HEAD must be the commit the operator approved (S0-13) =="
 # A second, independent binding: the gate checks out the requested commit, and the

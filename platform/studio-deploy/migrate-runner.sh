@@ -255,10 +255,17 @@ export PGDATABASE="${PGDATABASE%%\?*}"
 [ -n "$PGUSER" ] && [ -n "$PGHOST" ] && [ -n "$PGDATABASE" ] \
   || die "could not parse MIGRATION_DATABASE_URL (need user:pass@host:port/db)"
 
+# Migration content is STREAMED THROUGH STDIN, not bind-mounted.
+# Measured 2026-09-27 on the host: the guest mounts only the login user's
+# home (an unshared host path), so a `-v <STATE_DIR>/../...`
+# bind-mount would arrive EMPTY inside the container and every migration would
+# fail closed at the include step. Mounting the login user's home instead would
+# expose the very files the deploy-user model separates to every container.
+# Streaming keeps the properties that mattered: the content arrives exactly as
+# hashed, inside the same transaction, and never on a command line.
 psql_in() { # psql_in [psql args...] — SQL arrives on stdin when needed
   "$DOCKER_BIN" --context "$DOCKER_CONTEXT" run --rm -i --network "$DB_NETWORK" \
     -e PGHOST -e PGPORT -e PGUSER -e PGPASSWORD -e PGDATABASE \
-    -v "$MIG_DIR":/migrations:ro \
     --entrypoint psql "$PSQL_IMAGE" -v ON_ERROR_STOP=1 "$@"
 }
 
@@ -295,17 +302,20 @@ while IFS=' ' read -r tag hash; do
   fi
 
   log "applying $tag"
-  # The migration text is \i-included inside the transaction; the bookkeeping
-  # values are passed as psql variables, so no migration content is ever
-  # interpolated into a command line.
-  psql_in -q -v tag="$tag" -v hash="$hash" -v created_at="$(date +%s)000" <<SQL \
+  # The migration text is streamed on stdin inside the transaction (the guest
+  # must not receive the login home — a bind-mount under the state tree would
+  # arrive empty, see the psql_in comment above); the bookkeeping values are
+  # passed as psql variables, so no migration content is ever interpolated into a
+  # command line.
+  {
+    printf 'BEGIN;\n\n'
+    cat "$file"
+    printf '\n'
+    printf 'INSERT INTO public.__drizzle_migrations (hash, tag, created_at)\n'
+    printf "  VALUES (:'hash', :'tag', :'created_at'::bigint);\n"
+    printf 'COMMIT;\n'
+  } | psql_in -q -v tag="$tag" -v hash="$hash" -v created_at="$(date +%s)000" \
     || die "migration $tag failed"
-BEGIN;
-\i /migrations/$tag.sql
-INSERT INTO public.__drizzle_migrations (hash, tag, created_at)
-  VALUES (:'hash', :'tag', :'created_at'::bigint);
-COMMIT;
-SQL
   applied="$applied $tag"
 done <<EOF
 $validated
