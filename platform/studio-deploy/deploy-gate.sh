@@ -455,7 +455,11 @@ log "migration ok"
 
 # --- 4. trigger the deploy --------------------------------------------------
 log "triggering Coolify deploy for $APP_UUID"
-trigger="$(api GET "/deploy?uuid=$APP_UUID&force=false")" || die "deploy trigger call failed"
+# The trigger is a POST (measured live on Coolify 4.3.23: GET /deploy answers
+# "This endpoint has changed to a POST request." and queues nothing). The poll
+# below stays GET. A POST changes state — that is fine here: this IS the deploy
+# step, after migration + approval binding succeeded.
+trigger="$(api POST "/deploy?uuid=$APP_UUID&force=false")" || die "deploy trigger call failed"
 DEPLOY_UUID="$(printf '%s' "$trigger" | json '.deployments[0].deployment_uuid')"
 [ -n "$DEPLOY_UUID" ] || die "no deployment uuid in trigger response (trigger accepted ≠ deploy started)"
 log "deployment $DEPLOY_UUID"
