@@ -89,7 +89,11 @@ else
 fi
 
 set +e
-VERIFY_ONLY=1 out="$("$GATE" "$FIX_TIP_SHA" 2>&1)"; rc=$?
+# The override must be a REAL environment variable of the gate process: an
+# assignment prefix without a command name creates only a shell variable, which
+# no child process can see. env(1) puts it into the environment, which is the
+# attacker model the gate's report exists for.
+out="$(env VERIFY_ONLY=1 "$GATE" "$FIX_TIP_SHA" 2>&1)"; rc=$?
 set -e
 if printf '%s' "$out" | grep -q "ignoring environment override"; then
   echo "PASS  a stray VERIFY_ONLY is announced as ignored"

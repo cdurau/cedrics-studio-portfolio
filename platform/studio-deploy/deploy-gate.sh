@@ -194,10 +194,16 @@ export HOME
 
 # Environment overrides are ignored, and that is reported rather than hidden:
 # "nothing happened" must not be confusable with "the override worked".
+# The check must consult the ENVIRONMENT, not the shell variables: the literals
+# above live in the same namespace (fixed by 2026-09-27 live run, where the old
+# ${!n} form reported the gate's own substituted literals as "ignored overrides"
+# on every run, drowning a real override in noise). env -i from the hook passes
+# nothing, so a production run is silent; a caller who exports one of these names
+# is reported by name.
 OVERRIDE_NAMES="APP_SLUG TRUST_DIR MIGRATE_RUNNER VERIFY_CONTAINER APPROVALS_FILE PSQL_IMAGE DOCKER_BIN DOCKER_CONTEXT DB_NETWORK STATE_DIR GATE_REPO GATE_REF COOLIFY_API VERIFY_ONLY REF_CHECK_ONLY DEPLOY_TIMEOUT HEALTH_TIMEOUT POLL_INTERVAL DEPLOY_USER SUDO_BIN"
 seen=""
 for n in $OVERRIDE_NAMES; do
-  case "${!n:-}" in
+  case "$(printenv "$n")" in
     "") : ;;
     *) seen="$seen $n" ;;
   esac
