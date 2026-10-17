@@ -307,25 +307,58 @@ def _finish(mcp: FastMCP) -> FastMCP:
 # ---------------------------------------------------------------------- HTTP auth
 
 
+class CfAccessVerifier:
+    """Validates the 'Cf-Access-Jwt-Assertion' header that Cloudflare Access adds to every request it lets through.
+    Signature (team JWKS), audience (AUD tag of the Access app), issuer and expiry are checked."""
+
+    def __init__(self, team: str, aud: str, jwks_client: Any = None):
+        import jwt
+
+        domain = team if "." in team else f"{team}.cloudflareaccess.com"
+        self.issuer = f"https://{domain}"
+        self.aud = aud
+        self.jwks = jwks_client or jwt.PyJWKClient(f"{self.issuer}/cdn-cgi/access/certs", lifespan=3600)
+
+    def verify(self, token: str) -> dict:
+        import jwt
+
+        key = self.jwks.get_signing_key_from_jwt(token).key
+        return jwt.decode(token, key, algorithms=["RS256"], audience=self.aud, issuer=self.issuer,
+                          options={"require": ["exp", "iat", "aud", "iss"]})
+
+
 class BearerAuth:
-    """Minimal ASGI middleware: requires 'Authorization: Bearer <token>'.
+    """Minimal ASGI middleware: accepts 'Authorization: Bearer <token>' and/or a valid Cloudflare Access JWT
+    ('Cf-Access-Jwt-Assertion'); any configured method that succeeds lets the request through.
     Tokens in the query string are deliberately not accepted (they end up in logs and histories)."""
 
-    def __init__(self, app, token: str, open_paths: tuple[str, ...] = ("/health",)):
+    def __init__(self, app, token: str | None = None, cf_access: CfAccessVerifier | None = None,
+                 open_paths: tuple[str, ...] = ("/health",)):
         self.app = app
-        self.token = token.encode()
+        self.token = token.encode() if token else None
+        self.cf_access = cf_access
         self.open_paths = open_paths
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or scope.get("path") in self.open_paths:
             return await self.app(scope, receive, send)
         supplied = b""
+        assertion = b""
         for k, v in scope.get("headers", []):
             if k == b"authorization" and v[:7].lower() == b"bearer ":
                 supplied = v[7:].strip()
-                break
-        if supplied and hmac.compare_digest(supplied, self.token):
+            elif k == b"cf-access-jwt-assertion":
+                assertion = v.strip()
+        if self.token and supplied and hmac.compare_digest(supplied, self.token):
             return await self.app(scope, receive, send)
+        if self.cf_access and assertion:
+            import anyio
+
+            try:
+                await anyio.to_thread.run_sync(self.cf_access.verify, assertion.decode("ascii"))
+                return await self.app(scope, receive, send)
+            except Exception as e:  # invalid/expired token, wrong AUD, JWKS unreachable, …
+                log.warning("Cloudflare-Access-JWT abgelehnt: %s", type(e).__name__)
         body = b'{"error":"unauthorized"}'
         await send({"type": "http.response.start", "status": 401,
                     "headers": [(b"content-type", b"application/json"),
@@ -337,7 +370,8 @@ class BearerAuth:
 def build_http_app(cfg: ServerConfig):
     mcp = build_server(cfg)
     app = mcp.streamable_http_app()
-    return BearerAuth(app, cfg.token) if cfg.token else app
+    cf_access = CfAccessVerifier(cfg.cf_access_team, cfg.cf_access_aud) if cfg.cf_access_team else None
+    return BearerAuth(app, cfg.token, cf_access) if cfg.token or cf_access else app
 
 
 # ---------------------------------------------------------------------- CLI
@@ -372,14 +406,15 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     local = cfg.host in ("127.0.0.1", "localhost", "::1")
-    if not cfg.token and not local and not args.no_auth:
+    if not cfg.token and not cfg.cf_access_team and not local and not args.no_auth:
         raise SystemExit(
             f"HTTP auf {cfg.host} ohne Token ist unsicher. Setze OBSIDIAN_MCP_TOKEN "
             "(z. B. via `obsidian-mcp --gen-token`) oder nutze --no-auth bewusst."
         )
     import uvicorn
 
-    log.info("HTTP-Endpoint: http://%s:%s/mcp  (Auth: %s)", cfg.host, cfg.port, "Bearer" if cfg.token else "keine")
+    auth = [name for name, on in (("Bearer", cfg.token), ("Cloudflare Access", cfg.cf_access_team)) if on]
+    log.info("HTTP-Endpoint: http://%s:%s/mcp  (Auth: %s)", cfg.host, cfg.port, " + ".join(auth) or "keine")
     uvicorn.run(build_http_app(cfg), host=cfg.host, port=cfg.port, log_level="info")
 
 

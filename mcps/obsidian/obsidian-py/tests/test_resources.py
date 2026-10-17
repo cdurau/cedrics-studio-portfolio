@@ -185,3 +185,59 @@ def test_http_auth_rejects_query_token(tmp_path):
         ok = http.post("/mcp", headers={"Authorization": "Bearer geheim", "Accept": "application/json, text/event-stream"},
                        json={"jsonrpc": "2.0", "id": 1, "method": "ping"})
         assert ok.status_code != 401
+
+
+def test_http_auth_cloudflare_access_jwt(tmp_path):
+    import time
+
+    import jwt
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from starlette.testclient import TestClient
+
+    from obsidian_mcp.server import BearerAuth, CfAccessVerifier
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    other = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+    class FakeJWKS:  # stands in for PyJWKClient: no network access in tests
+        def get_signing_key_from_jwt(self, _token):
+            return type("K", (), {"key": key.public_key()})()
+
+    verifier = CfAccessVerifier("team", "aud-tag", jwks_client=FakeJWKS())
+    assert verifier.issuer == "https://team.cloudflareaccess.com"
+
+    def token(signing_key=key, **over):
+        now = int(time.time())
+        claims = {"iss": verifier.issuer, "aud": ["aud-tag"], "iat": now, "exp": now + 300,
+                  "email": "user@example.com"} | over
+        return jwt.encode(claims, signing_key, algorithm="RS256")
+
+    vault_dir = tmp_path / "v"
+    vault_dir.mkdir()
+    cfg = ServerConfig(vaults={"v": VaultConfig(name="v", path=vault_dir)})
+    app = BearerAuth(build_server(cfg).streamable_http_app(), token=None, cf_access=verifier)
+    ping = {"jsonrpc": "2.0", "id": 1, "method": "ping"}
+    accept = {"Accept": "application/json, text/event-stream"}
+
+    with TestClient(app) as http:
+        assert http.get("/health").status_code == 200
+        assert http.post("/mcp", json=ping, headers=accept).status_code == 401
+        # The OAuth token Access hands to clients arrives as Authorization header and is not ours to check.
+        assert http.post("/mcp", json=ping, headers=accept | {"Authorization": "Bearer x"}).status_code == 401
+        for bad in (token(aud=["andere-app"]), token(iss="https://evil.cloudflareaccess.com"),
+                    token(exp=int(time.time()) - 10), token(signing_key=other), "kein.jwt.token"):
+            assert http.post("/mcp", json=ping, headers=accept | {"Cf-Access-Jwt-Assertion": bad}).status_code == 401
+        ok = http.post("/mcp", json=ping, headers=accept | {"Cf-Access-Jwt-Assertion": token()})
+        assert ok.status_code == 200
+
+
+def test_cloudflare_access_config_needs_team_and_aud(tmp_path, monkeypatch):
+    from obsidian_mcp.config import load_config
+
+    monkeypatch.setenv("OBSIDIAN_MCP_CF_ACCESS_TEAM", "team")
+    monkeypatch.delenv("OBSIDIAN_MCP_CF_ACCESS_AUD", raising=False)
+    with pytest.raises(SystemExit):
+        load_config(cli_vaults=[f"v={tmp_path}"])
+    monkeypatch.setenv("OBSIDIAN_MCP_CF_ACCESS_AUD", "aud-tag")
+    cfg = load_config(cli_vaults=[f"v={tmp_path}"])
+    assert (cfg.cf_access_team, cfg.cf_access_aud) == ("team", "aud-tag")

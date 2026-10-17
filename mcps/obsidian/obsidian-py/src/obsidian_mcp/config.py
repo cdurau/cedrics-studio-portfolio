@@ -27,6 +27,8 @@ class ServerConfig:
     port: int = 8765
     token: str | None = None
     allowed_hosts: list[str] = field(default_factory=list)
+    cf_access_team: str | None = None  # Cloudflare Access team name or domain (e.g. "myteam" or "myteam.cloudflareaccess.com")
+    cf_access_aud: str | None = None  # AUD tag of the Access application
     resource_limit: int = 1000  # max. notes listed as MCP resources (newest first)
 
 
@@ -70,6 +72,8 @@ def load_config(
         cfg.port = int(srv.get("port", cfg.port))
         cfg.token = srv.get("token") or None
         cfg.allowed_hosts = list(srv.get("allowed_hosts", []))
+        cfg.cf_access_team = srv.get("cf_access_team") or None
+        cfg.cf_access_aud = srv.get("cf_access_aud") or None
         cfg.resource_limit = int(srv.get("resource_limit", cfg.resource_limit))
         for name, v in data.get("vaults", {}).items():
             vc = VaultConfig(
@@ -97,6 +101,10 @@ def load_config(
         cfg.resource_limit = int(os.environ["OBSIDIAN_MCP_RESOURCE_LIMIT"])
     if os.environ.get("OBSIDIAN_MCP_ALLOWED_HOSTS"):
         cfg.allowed_hosts = [h.strip() for h in os.environ["OBSIDIAN_MCP_ALLOWED_HOSTS"].split(",") if h.strip()]
+    cfg.cf_access_team = os.environ.get("OBSIDIAN_MCP_CF_ACCESS_TEAM") or cfg.cf_access_team
+    cfg.cf_access_aud = os.environ.get("OBSIDIAN_MCP_CF_ACCESS_AUD") or cfg.cf_access_aud
+    if bool(cfg.cf_access_team) != bool(cfg.cf_access_aud):
+        raise SystemExit("Cloudflare Access braucht beides: OBSIDIAN_MCP_CF_ACCESS_TEAM und OBSIDIAN_MCP_CF_ACCESS_AUD.")
 
     if not cfg.vaults:
         raise SystemExit(
