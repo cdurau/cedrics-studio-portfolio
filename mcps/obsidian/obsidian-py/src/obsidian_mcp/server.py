@@ -409,7 +409,7 @@ def main(argv: list[str] | None = None) -> None:
         print(secrets.token_urlsafe(32))
         return
 
-    logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     cfg = load_config(args.config, args.vault, args.read_only, args.host, args.port, args.token)
     for v in cfg.vaults.values():
         log.info("Vault '%s' -> %s%s", v.name, v.path, " (read-only)" if v.read_only else "")
@@ -428,7 +428,7 @@ def main(argv: list[str] | None = None) -> None:
 
     auth = [name for name, on in (("Bearer", cfg.token), ("Cloudflare Access", cfg.cf_access_team)) if on]
     log.info("HTTP-Endpoint: http://%s:%s/mcp  (Auth: %s)", cfg.host, cfg.port, " + ".join(auth) or "keine")
-    uvicorn.run(build_http_app(cfg), host=cfg.host, port=cfg.port, log_level="info")
+    uvicorn.run(build_http_app(cfg), host=cfg.host, port=cfg.port, log_level="info", log_config=None)
 
 
 if __name__ == "__main__":
