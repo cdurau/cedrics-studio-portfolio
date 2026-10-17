@@ -7,6 +7,7 @@ import hmac
 import logging
 import secrets
 import sys
+import time
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -327,6 +328,18 @@ class CfAccessVerifier:
                           options={"require": ["exp", "iat", "aud", "iss"]})
 
 
+def _expiry_hint(assertion: bytes) -> str:
+    """Diagnostics only: ' (exp vor 123s, iat vor 456s)' from the unverified payload of a rejected JWT."""
+    import jwt
+
+    try:
+        c = jwt.decode(assertion, options={"verify_signature": False, "verify_exp": False, "verify_aud": False})
+        now = int(time.time())
+        return f" (exp {now - int(c['exp']):+d}s, iat {now - int(c['iat']):+d}s relativ zu jetzt)"
+    except Exception:
+        return ""
+
+
 class BearerAuth:
     """Minimal ASGI middleware: accepts 'Authorization: Bearer <token>' and/or a valid Cloudflare Access JWT
     ('Cf-Access-Jwt-Assertion'); any configured method that succeeds lets the request through.
@@ -358,7 +371,7 @@ class BearerAuth:
                 await anyio.to_thread.run_sync(self.cf_access.verify, assertion.decode("ascii"))
                 return await self.app(scope, receive, send)
             except Exception as e:  # invalid/expired token, wrong AUD, JWKS unreachable, …
-                log.warning("Cloudflare-Access-JWT abgelehnt: %s", type(e).__name__)
+                log.warning("Cloudflare-Access-JWT abgelehnt: %s%s", type(e).__name__, _expiry_hint(assertion))
         body = b'{"error":"unauthorized"}'
         await send({"type": "http.response.start", "status": 401,
                     "headers": [(b"content-type", b"application/json"),
