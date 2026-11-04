@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>__APP_SLUG__</title>
+
+    <!-- PWA shell. The generator substitutes __APP_SLUG__ here, in
+         manifest.webmanifest and in sw.js — see README § Deploy notes. -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#0f172a" />
+    <link rel="icon" href="/icons/icon-192.png" />
+    <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/source/client/main.tsx"></script>
+    <script>
+      // Registered after load so the SW never competes with the first paint.
+      if ("serviceWorker" in navigator) {
+        window.addEventListener("load", () => {
+          navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(() => {
+            // A failed registration must never break the app — the SW only
+            // adds the offline shell, it is not part of the auth path.
+          });
+        });
+      }
+    </script>
+  </body>
+</html>

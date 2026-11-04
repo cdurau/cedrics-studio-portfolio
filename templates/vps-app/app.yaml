@@ -1,0 +1,23 @@
+# user-app profile manifest — Studio App Contract v2
+# The bounded app generator replaces __APP_SLUG__ only after validating it
+# against ^[a-z0-9][a-z0-9-]*$. The origin remains derived from that slug.
+# Better-Auth in-app auth (forward_auth: false): no Authentik ForwardAuth,
+# no scrub/injector middleware on this origin (deliberate exception, see
+# coolify-app-provisioning skill + CONTRACTS-v2 user-app auth contract).
+schema: 1
+slug: "__APP_SLUG__"
+class: user-app
+profile: vps-app
+routing:
+  mode: service
+  # Contract invariant: origin MUST be <slug>.studio.example.
+  origin: "__APP_SLUG__.studio.example"
+  base_path: /
+database:
+  type: postgres
+auth:
+  method: better-auth
+  forward_auth: false
+health:
+  liveness: /healthz
+  readiness: /readyz

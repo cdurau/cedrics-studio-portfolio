@@ -1,0 +1,62 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run test:image
+  image:
+    needs: check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Build and publish immutable SHA image
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_ACTOR: ${{ github.actor }}
+          IMAGE: ghcr.io/example-owner/__APP_SLUG__
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_SHA" =~ ^[a-f0-9]{40}$ ]]
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GH_ACTOR" --password-stdin
+          trap 'docker logout ghcr.io >/dev/null' EXIT
+          # Fail closed for existing tags and ambiguous registry errors.
+          if docker manifest inspect "$IMAGE:$GITHUB_SHA" >manifest.json 2>manifest-error.txt; then
+            echo 'SHA_TAG_ALREADY_EXISTS' >&2; exit 1
+          elif ! grep -Eq 'manifest unknown|no such manifest' manifest-error.txt; then
+            echo 'REGISTRY_LOOKUP_FAILED' >&2; exit 1
+          fi
+          docker buildx build --platform linux/amd64 --build-arg "APP_COMMIT_SHA=$GITHUB_SHA" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --tag "$IMAGE:$GITHUB_SHA" --metadata-file image-metadata.json --push .
+          node -e 'const fs=require("fs");const m=JSON.parse(fs.readFileSync("image-metadata.json"));const d=m["containerimage.digest"];if(!/^sha256:[a-f0-9]{64}$/.test(d))process.exit(1);fs.writeFileSync("image-digest.txt",process.env.IMAGE+":"+process.env.GITHUB_SHA+"@"+d+"\n")'
+          cat image-digest.txt >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: image-digest-${{ github.sha }}
+          path: image-digest.txt
+          if-no-files-found: error
