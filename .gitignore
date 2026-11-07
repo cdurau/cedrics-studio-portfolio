@@ -1,0 +1,13 @@
+# Environments created while running the examples locally.
+.venv/
+venv/
+node_modules/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.pyc
+dist/
+.env
+.env.local
+.env.*.local
