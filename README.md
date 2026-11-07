@@ -1,154 +1,105 @@
-# Cedric's Studio — public excerpt
+# Cedric's Studio
 
-Personal project by Cedric Durau. This repository is a cleaned excerpt of a private studio where I design agent workflows, review gates, MCP servers, and application templates for a self-hosted platform.
+Personal project by Cedric Durau. I built a small platform for designing, reviewing, and scaffolding applications with coding agents: a fail-closed workflow, a deploy gate that does not trust the app repository, two MCP servers for Obsidian vaults, and the application templates those tools target.
 
-It is a record of my own technical work. It is not employment history and it does not describe a commercial product. A separate public repository, [llm-bench](https://github.com/cdurau/llm-bench), holds reproducible benchmarks of local language models used as coding agents.
+This is private work. Coding agents helped produce parts of it. I directed the design, integrated the pieces, reviewed the results, and kept changing them. It is not employment and it is not a commercial product.
 
-## What this history is
+A separate public repository, [llm-bench](https://github.com/cdurau/llm-bench), records reproducible benchmarks of local language models used as coding agents.
 
-The commits below 2026-11-07 are real commits from the private project. `git-filter-repo` kept an allowlist of paths, preserved the original authors and timestamps, and dropped commits that became empty. Commit hashes differ from the private repository. A few identifiers inside the kept files were replaced with placeholders such as example hosts, example home directories, and example vault names. No historical commit was invented and none was backdated.
+The commits from 2026-08-21 through 2026-11-07 are a filtered excerpt of a private repository. Authors and timestamps are original. Commit hashes are not. A few host-specific names in the kept files were replaced with placeholders. Maintenance commits after that date are new work on this excerpt.
 
-Some commit messages describe a larger original change than the diff that remains here. The operational platform, deployment configuration, and private agent setup are not part of this excerpt. This `README.md` was added on 2026-11-07 as a new commit.
-
-No repository-wide license is selected yet. Third-party packages keep the licenses recorded in their own metadata. The TypeScript Obsidian MCP server declares MIT in `package.json`. Until a repository license is added, treat the other files as all rights reserved.
+No reuse license is granted for my code. Third-party packages keep the licenses in their own metadata. There is no root `LICENSE` file.
 
 ## Architecture
 
-The excerpt has four layers. Each layer is code that can be read and, for the checks listed below, run without the private platform.
-
-```text
-app brief
-    -> select_profile.py          choose one supported application profile
-    -> scaffold_template.py       copy that profile into a bounded app tree
-    -> git_gate.py                accept only the bounded diff, fail closed on secret shapes
-    -> review_checklist.py        require inspected evidence before acceptance
-    -> platform/studio-deploy     owner-installed deploy gate, separate from the app repo
-templates/                        runnable application profiles
-mcps/obsidian/                    two MCP servers over the same vault model
+```mermaid
+flowchart LR
+  brief[App brief] --> profile[select_profile.py]
+  profile --> scaffold[scaffold_template.py]
+  scaffold --> gitgate[git_gate.py]
+  gitgate --> review[review_checklist.py]
+  review --> deploy[studio-deploy]
+  templates[Application templates] --> scaffold
 ```
 
-The workflow scripts live at `.hermes/archive/skills/app-builder-workflow/scripts/`. That is the path the filtered history preserves. The private skill definition that once wrapped these scripts is not included.
+The workflow scripts live in [`.hermes/archive/skills/app-builder-workflow/scripts/`](.hermes/archive/skills/app-builder-workflow/scripts). An app brief selects one profile. The scaffold copies that profile into a bounded tree. The git gate accepts only that tree's diff. The review checklist records inspected evidence. `platform/studio-deploy/` is the owner-installed deploy gate and is separate from the app repository.
 
-| Piece | Role |
-| --- | --- |
-| `select_profile.py` | Deterministic profile choice from nine brief dimensions |
-| `scaffold_template.py` | Copies a profile and checks the result stays inside the app tree |
-| `git_gate.py` | Validates the real git diff. An executor's own report is not evidence |
-| `review_checklist.py` | Fail-closed review record, including senior-review triggers |
-| `agy_job_wrapper.py` | Parses a job envelope and rejects malformed or incomplete input |
-| `platform/studio-deploy/` | Shell deploy gate. Trust paths are fixed at install time. Tests use fake Docker and fake sudo |
-| `templates/` | Application profiles: static Vite, React/Hono with SQLite or Postgres, Next.js, FastAPI, a small Python service, a Better Auth user-app, and a VPS app scaffold |
-| `mcps/obsidian/obsidian-py/` | Python MCP server. Reads and writes Markdown directly. stdio or streamable HTTP |
-| `mcps/obsidian/obsidian-js/` | TypeScript MCP server for the same vault model, bundled to one file |
+## Three pieces to read
 
-`select_profile.py` knows six profiles: `static-vite`, `react-hono-sqlite`, `react-hono-postgres`, `next-postgres`, `python-fastapi`, and `python-service`. The React/Hono Postgres v2 profile, the user-app profile, and the VPS app scaffold are later templates in this repository. They are not members of that six-profile tuple.
+1. [git_gate.py](.hermes/archive/skills/app-builder-workflow/scripts/git_gate.py) checks the files git actually changed. An executor's own report is not evidence. Secret-shaped lines, unexpected workflows, and path escapes fail closed.
+2. [deploy-gate.sh](platform/studio-deploy/deploy-gate.sh) accepts one full commit SHA. Trust paths are fixed at install time. Migration SQL runs only when an approval list matches that commit. The tests use a fake Docker and a fake sudo.
+3. [obsidian_mcp/server.py](mcps/obsidian/obsidian-py/src/obsidian_mcp/server.py) and [obsidian-js/src](mcps/obsidian/obsidian-js/src) are two MCP servers over the same idea: read and write Markdown directly, over stdio or streamable HTTP. The Python HTTP path can verify a Cloudflare Access JWT. Tests use fake team and audience values. Neither server ships a vault path.
 
-## Tech stack
-
-- Python 3.11+ for the workflow scripts, the standard library, and the Obsidian MCP server. The profile scripts use PyYAML and JSON Schema where a brief is validated.
-- TypeScript on Node.js 20+ (the VPS app template asks for Node 22+), Vitest, React 19, Hono, Better Auth, Drizzle ORM, and PostgreSQL in the later templates.
-- MCP over stdio and streamable HTTP. The Python HTTP path can verify a Cloudflare Access JWT. Tests use fake team and audience values.
-- Shell for the deploy gate, with hermetic fixtures rather than a live host.
-- Dockerfiles are present on the Python MCP server and the application templates. Image builds and integration databases were not run for this excerpt.
-
-## Responsibility
-
-I wrote the workflow, the review and deploy gates, both Obsidian MCP servers, and the application templates. Libraries such as Hono, React, Better Auth, Drizzle, FastAPI, and the MCP SDK are dependencies. I did not include third-party skill packs or the private platform that runs the studio.
-
-## Agent workflow and MCP
-
-Profile selection is a pure function of the brief. This command was run in the filtered tree:
+`select_profile.py` chooses among six profiles: `static-vite`, `react-hono-sqlite`, `react-hono-postgres`, `next-postgres`, `python-fastapi`, and `python-service`. The later Postgres, user-app, and VPS scaffolds are additional templates in this repository.
 
 ```bash
 cd .hermes/archive/skills/app-builder-workflow/scripts
 python3 select_profile.py evaluate --python-needed --backend-needed
 ```
 
-It prints a `python-service` decision and the nine dimension flags. `from-brief`, `derive-manifest`, and `validate` read an app brief from disk. Validation is fail-closed: a brief that does not match the schema is rejected.
+That command prints a `python-service` decision and the nine brief flags.
 
-The git gate checks the files git actually changed. The bounded shape is `apps/<slug>/**` plus one deploy workflow for that slug. Path traversal, unexpected workflows, and secret-shaped lines fail the gate. The tests include obvious fake credentials, including the public AWS example key and a `ghp_` string of x characters, so the detector has something to catch. Those fixtures are not credentials.
+## Stack
 
-The two Obsidian servers do not ship a vault path. Configuration comes from the environment, a config file, or `--vault name=/path/to/vault` on the TypeScript server. Do not commit a vault path.
+Python 3.11+ and the standard library for the workflow. TypeScript on Node.js 20+ (the VPS template typechecks on Node 22), Vitest, React 19, Hono, Better Auth 1.7.18, Drizzle, and PostgreSQL in the later templates. MCP over stdio and streamable HTTP. Shell for the deploy gate. Dockerfiles are in the Python MCP server and the templates. This CI does not build images or contact a private network.
 
-## Security and review model
+## Review and deploy
 
-The workflow treats an agent's self-report as untrusted. `git_gate.py` inspects the diff. `review_checklist.py` records whether scope, diff, and external effects were actually checked, and it forces a senior review for security boundaries, coupled control planes, and contradictory evidence.
+The git gate bounds a new app to `apps/<slug>/**` plus one deploy workflow. The review checklist forces another review for security boundaries, coupled control planes, and contradictory evidence.
 
-`platform/studio-deploy/` is the owner-installed side of a deploy. Placeholders such as `__APP_SLUG__` and `__TRUST_DIR__` have to be substituted once at install time. The scripts refuse to run while a placeholder remains. Trust decisions do not follow environment overrides. Migration SQL runs only when an approval list matches the approved commit. The suites under `platform/studio-deploy/tests/` build a substituted copy and a fake Docker. They do not contact a production host.
+In `platform/studio-deploy/`, placeholders such as `__APP_SLUG__` and `__TRUST_DIR__` are substituted once at install. A leftover placeholder makes the script refuse to run. Environment variables do not move trust paths. Root helpers take no arguments. The suites under `platform/studio-deploy/tests/` build a substituted copy. They do not call a live host.
 
-The Python MCP server's HTTP mode checks a bearer token and can verify a Cloudflare Access JWT. The tests reject a query-string token and use non-production team and audience values.
+## Tests
 
-## Checks that passed
+Checked on this tree on 2026-11-07. The root CI workflow [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs the same commands on GitHub-hosted runners, with `contents: read` and no credentials.
 
-Run on 2026-11-07 from this tree. Counts are the command output from that run.
+| Command | Result |
+| --- | --- |
+| `uv run --with pytest --with pyyaml --with jsonschema pytest -q` in the workflow scripts | 375 passed |
+| Seven `platform/studio-deploy/tests/*.sh` suites | PASS |
+| `uv run pytest` in `mcps/obsidian/obsidian-py` | 30 passed, 1 deprecation warning |
+| `npm test` and `npm run build` in `mcps/obsidian/obsidian-js` | 48 passed, bundle written |
+| `npm test` and `npm run typecheck` in `templates/vps-app` | 16 passed, typecheck clean |
+| `npm test` and `npm run typecheck` in `templates/react-hono-postgres-v2` | 27 passed, typecheck clean |
+| `npm test` in `templates/react-hono-postgres-v2-user-app` | 15 passed, 1 skipped |
+| `PYTHONPATH=. pytest` in `templates/python-fastapi` and `templates/python-service` | 5 passed and 4 passed |
 
-App-builder workflow, from `.hermes/archive/skills/app-builder-workflow/scripts`:
+Integration scripts and image builds were not run. They need a database or Docker. `tests/fake-docker.sh` is a helper, not a suite.
 
-```bash
-python3 -m unittest discover -p 'test_*.py'
-uv run --with pytest --with pyyaml --with jsonschema pytest -q \
-  test_agy_job_wrapper.py test_portability_contract.py \
-  test_scaffold_template.py test_select_profile.py
-```
+`npm audit` after the dependency update, without taking major upgrades: Obsidian TypeScript MCP 3 (1 moderate, 2 critical), VPS app 8 (6 moderate, 2 critical), React/Hono Postgres v2 8 (6 moderate, 2 critical). The remaining critical findings are Vitest 3 and tinypool, which are test tooling. The fix npm offers is Vitest 5. I did not take that major upgrade. Details are not repeated as a security guarantee: run `npm audit` yourself.
 
-`unittest` reported 221 tests and 4 import errors, because four modules require `pytest`. It reported no assertion failure. The pytest command then reported `158 passed`.
+## History
 
-Deploy gate, from `platform/studio-deploy`:
+| Month | Kept commits | What changed |
+| --- | --- | --- |
+| August 2026 | 20 | Profiles, app-brief schema, scaffolding, git gate, review checklist, acceptance checks |
+| September 2026 | 34 | Postgres v2 profile, Better Auth user-app, trusted deploy gate, both Obsidian MCP servers |
+| October 2026 | 4 | Cloudflare Access JWT checks, then the workflow scripts kept under the archive path |
+| November 2026 | 2 | VPS app scaffold on 2026-11-04, and this guide on 2026-11-07 |
 
-```bash
-for s in approval-binding deploy-user hook-validation migration-approval \
-         ref-binding trusted-path verify-binding
-do
-  bash "tests/${s}.sh"
-done
-```
+One later registry-only commit became empty once both registry names were generalized, so it is not in this history. I did not invent a replacement.
 
-All seven suites printed `PASS`. `tests/fake-docker.sh` is a helper. It is not a suite, and running it alone fails until a scenario file is set.
+## Run the profile example
 
-Obsidian MCP:
-
-```bash
-cd mcps/obsidian/obsidian-py && uv sync --extra dev && uv run pytest
-cd mcps/obsidian/obsidian-js && npm ci && npm test
-```
-
-Python: `30 passed`, plus one Starlette deprecation warning about `httpx` in `tests/test_resources.py`. TypeScript: `48 passed` (31 unit, 12 e2e, 5 HTTP).
-
-Application templates:
+From a checkout:
 
 ```bash
-cd templates/react-hono-postgres-v2 && npm ci && npm run test:unit
-cd templates/vps-app && npm ci && npm run test:unit
-cd templates/python-fastapi
-PYTHONPATH=. uv run --with-requirements requirements.txt \
-  --with-requirements requirements-dev.txt pytest -q
-cd templates/python-service
-PYTHONPATH=. uv run --with-requirements requirements.txt \
-  --with-requirements requirements-dev.txt pytest -q
+cd .hermes/archive/skills/app-builder-workflow/scripts
+python3 select_profile.py evaluate --python-needed --backend-needed
+uv run --with pytest --with pyyaml --with jsonschema pytest -q
 ```
 
-Results: React/Hono Postgres v2 `27 passed`, VPS app unit tests `16 passed`, FastAPI `5 passed`, Python service `4 passed`. The template READMEs tell you to install into a virtualenv and run `pytest`. With `uv run`, the template root has to be on `PYTHONPATH` or `import source` fails. That is the command that passed.
+```bash
+cd platform/studio-deploy
+bash tests/trusted-path.sh
+```
 
-`npm audit` on the three installed Node trees, without changing lockfiles, reported 13 advisories for the TypeScript MCP server (6 moderate, 5 high, 2 critical), 15 for the VPS app (1 low, 8 moderate, 3 high, 3 critical), and 12 for React/Hono Postgres v2 (8 moderate, 2 high, 2 critical).
+```bash
+cd mcps/obsidian/obsidian-py
+uv sync --extra dev && uv run pytest
+```
 
-## Checks not run
-
-Integration scripts, `templates/vps-app` image smoke, and any live deployment were not run. They need Docker or a database. Unit tests for `static-vite`, `react-hono-sqlite`, `react-hono-postgres`, `next-postgres`, and `react-hono-postgres-v2-user-app` were not run for this pass. The user-app's live smoke tests are not in this excerpt.
-
-## Chronology
-
-The private repository has a longer history. This excerpt starts on 2026-08-21, the first commit that touches the kept paths, and its last historical commit is 2026-11-05. Sixty historical commits remain: 20 in August, 34 in September, 4 in October, and 2 in November.
-
-- **August 2026.** Application profiles, the app-brief schema, profile selection, scaffolding, the git gate, the review checklist, and the job wrapper. Several commits only tighten fail-closed behavior after review.
-- **September 2026.** The React/Hono Postgres v2 profile, the Better Auth user-app and its contract tests, the trusted deploy gate and its review rounds, both Obsidian MCP servers, and a harder migration runner.
-- **October 2026.** Cloudflare Access JWT checks on the Python MCP server, then one commit whose message is about a single app skill. The surviving change is the archived copy of the workflow scripts.
-- **November 2026.** The reviewed VPS app scaffold on 2026-11-04. The 2026-11-05 message describes GitHub App provisioning. The surviving diff is one container-registry line in `templates/vps-app/README.md`.
-
-## Where to read next
-
-1. `.hermes/archive/skills/app-builder-workflow/scripts/git_gate.py`
-2. `.hermes/archive/skills/app-builder-workflow/scripts/select_profile.py`
-3. `platform/studio-deploy/README.md` and `platform/studio-deploy/deploy-gate.sh`
-4. `mcps/obsidian/obsidian-py/src/obsidian_mcp/server.py`
-5. `mcps/obsidian/obsidian-js/src/`
-6. `templates/vps-app/source/` and `templates/react-hono-postgres-v2/source/`
+```bash
+cd mcps/obsidian/obsidian-js
+npm ci && npm test && npm run build
+```
