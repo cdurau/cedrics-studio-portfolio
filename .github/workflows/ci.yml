@@ -1,0 +1,118 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  app-builder:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
+      - name: Run workflow tests
+        working-directory: .hermes/archive/skills/app-builder-workflow/scripts
+        run: uv run --with pytest --with pyyaml --with jsonschema pytest -q
+
+  obsidian-py:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
+      - name: Run Python MCP tests
+        working-directory: mcps/obsidian/obsidian-py
+        run: |
+          uv sync --frozen --extra dev
+          uv run pytest -q
+
+  obsidian-js:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: mcps/obsidian/obsidian-js/package-lock.json
+      - name: Test and build TypeScript MCP server
+        working-directory: mcps/obsidian/obsidian-js
+        run: |
+          npm ci
+          npm test
+          npm run build
+
+  studio-deploy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Run deploy-gate suites
+        working-directory: platform/studio-deploy
+        run: |
+          set -euo pipefail
+          for suite in approval-binding deploy-user hook-validation migration-approval ref-binding trusted-path verify-binding
+          do
+            bash "tests/${suite}.sh"
+          done
+
+  node-templates:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - directory: templates/vps-app
+            command: npm test && npm run typecheck
+          - directory: templates/react-hono-postgres-v2
+            command: npm test && npm run typecheck
+          - directory: templates/react-hono-postgres-v2-user-app
+            command: npm test
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ${{ matrix.directory }}/package-lock.json
+      - name: Unit tests
+        working-directory: ${{ matrix.directory }}
+        run: |
+          npm ci
+          ${{ matrix.command }}
+
+  python-templates:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        directory:
+          - templates/python-fastapi
+          - templates/python-service
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.12"
+      - name: Template tests
+        working-directory: ${{ matrix.directory }}
+        run: |
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+          PYTHONPATH=. python -m pytest -q
