@@ -220,9 +220,9 @@ describe("user-app Auth Contract (CONTRACTS-v2 mandatory tests)", () => {
     await ownerPool.end();
   });
 
-  it("(0) better-auth exactly 1.7.5 pin asserted", () => {
+  it("(0) better-auth exactly 1.7.18 pin asserted", () => {
     const output = execSync("npm ls better-auth --json", { cwd: join(import.meta.dirname, "..") }).toString();
-    expect(JSON.parse(output).dependencies["better-auth"].version).toBe("1.7.5");
+    expect(JSON.parse(output).dependencies["better-auth"].version).toBe("1.7.18");
   });
 
   it("1+2) seeded verified login OK; unverified fixture rejected", async () => {

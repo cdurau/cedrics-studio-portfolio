@@ -20,9 +20,9 @@
     "admin:revoke-sessions": "tsx source/server/admin-cli.ts revoke-sessions"
   },
   "dependencies": {
-    "@hono/node-server": "^1.14.0",
+    "@hono/node-server": "1.19.18",
     "@node-rs/argon2": "2.2.1",
-    "better-auth": "1.7.5",
+    "better-auth": "1.7.18",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.13.0",
     "pg": "^8.13.0",

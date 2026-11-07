@@ -106,16 +106,16 @@ describe("user-app auth contract (static)", () => {
     }
   });
 
-  it("better-auth is pinned exactly to 1.7.5 (no range)", () => {
+  it("better-auth is pinned exactly to 1.7.18 (no range)", () => {
     const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-    expect(pkg.dependencies["better-auth"]).toBe("1.7.5");
+    expect(pkg.dependencies["better-auth"]).toBe("1.7.18");
     // Lockfile must carry the exact resolved version too
     const lock = readFileSync(new URL("../package-lock.json", import.meta.url), "utf8");
-    expect(lock).toContain('"better-auth": "1.7.5"');
+    expect(lock).toContain('"better-auth": "1.7.18"');
     const installed = execSync("npm ls better-auth --json", {
       cwd: new URL("..", import.meta.url).pathname,
     }).toString();
-    expect(JSON.parse(installed).dependencies["better-auth"].version).toBe("1.7.5");
+    expect(JSON.parse(installed).dependencies["better-auth"].version).toBe("1.7.18");
   });
 
   it("@node-rs/argon2 is pinned exactly to 2.2.1", () => {

@@ -17,7 +17,7 @@
     "db:migrate": "tsx source/server/migrate.ts"
   },
   "dependencies": {
-    "@hono/node-server": "^1.14.0",
+    "@hono/node-server": "1.19.18",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.13.0",
     "pg": "^8.13.0",

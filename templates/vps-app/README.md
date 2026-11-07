@@ -1,6 +1,6 @@
 # VPS app template
 
-React + Hono + PostgreSQL + Better Auth 1.7.5, derived from the frozen
+React + Hono + PostgreSQL + Better Auth 1.7.18, derived from the frozen
 `react-hono-postgres-v2-user-app` baseline. Email/password login only; public
 registration is disabled. Replace `__APP_SLUG__` with a validated Studio slug.
 

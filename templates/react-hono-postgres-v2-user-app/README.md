@@ -4,7 +4,7 @@ Studio user-app profile implementing the `user-app` auth contract from `template
 
 ## Features
 
-- **Better-Auth 1.7.5** (exact pin, lockfile committed) with Drizzle adapter and explicit schema mapping.
+- **Better-Auth 1.7.18** (exact pin, lockfile committed) with Drizzle adapter and explicit schema mapping.
 - **Auth methods:** email/password + Google OAuth. **Sign-up disabled** — users are admin-seeded only (`admin:seed-user`), `emailAndPassword.requireEmailVerification` on.
 - **Password hashing: Argon2id** via `@node-rs/argon2` (exact pin), parameters `m=19456, t=2, p=1` (RFC 9106 recommended profile). PHC string format `$argon2id$v=19$m=19456,t=2,p=1$...` — import-compatible with Appwrite user import.
 - **Account linking:** implicit linking disabled (`account.accountLinking.disableImplicitLinking`), Google `requireEmailVerification: true`. Same-email Google sign-in before explicit linking fails (`account_not_linked`); linking only via `/api/auth/link-social` from an existing session; different-email accounts are never merged.
@@ -17,11 +17,11 @@ Studio user-app profile implementing the `user-app` auth contract from `template
 - **PWA shell:** `manifest.webmanifest`, `sw.js` (network-first + offline fallback; `/api/*`, `/healthz`, `/readyz` are never cached), `offline.html` and placeholder icons under `source/client/public/`, copied into `dist/client` via `publicDir`. Regenerate the icons with `node scripts/generate-icons.mjs`; real apps replace them with their own artwork. Installability is asserted by the static contract test.
 - **Authorization policy:** [`AUTHORIZATION.md`](./AUTHORIZATION.md) — subjects, routes, per-table rules, the two enforcement layers, known deviations and the Appwrite mapping (required by CONTRACTS-v2 § *Data isolation*).
 
-## Rotation (verified against better-auth 1.7.5, decision 2026-09-19)
+## Rotation (verified against better-auth 1.7.5, rechecked on 1.7.18)
 
 `BETTER_AUTH_SECRETS` format: comma-separated `<version>:<secret>`, first entry = current (e.g. `2:<new>,1:<old>`).
 
-**Session semantics:** the session-token cookie is HMAC-signed with the flat first secret only (`dist/context/create-context.mjs` → `secret = secretsArray[0].value`; `dist/cookies/index.mjs` `setSessionCookie`). There is **no session-cookie rollover** in 1.7.5 — the JWT/kid multi-secret path applies only to encrypted JWTs/OAuth state. Planned rotation therefore **invalidates existing sessions** (users re-login; safe default) while new logins keep working. Keep the old version in the list only to decrypt legacy encrypted data; remove it after the bounded window.
+**Session semantics:** the session-token cookie is HMAC-signed with the flat first secret only (`dist/context/create-context.mjs` → `secret = secretsArray[0].value`; `dist/cookies/index.mjs` `setSessionCookie`). That line is still present in 1.7.18. There is no session-cookie rollover — the JWT/kid multi-secret path applies only to encrypted JWTs/OAuth state. Planned rotation therefore **invalidates existing sessions** (users re-login; safe default) while new logins keep working. Keep the old version in the list only to decrypt legacy encrypted data; remove it after the bounded window.
 
 **Emergency revocation** is `admin:revoke-sessions <email>` (server-side session deletion), never a secret change.
 
