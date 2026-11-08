@@ -67,7 +67,7 @@ Checked on this tree on 2026-11-08. The root CI workflow [`.github/workflows/ci.
 | `npm test` and `npm run build` in `templates/static-vite` | 7 passed, bundle written |
 | `PYTHONPATH=. pytest` in `templates/python-fastapi` and `templates/python-service` | 5 passed and 4 passed |
 
-`tests/fake-docker.sh` is a helper, not a suite. The Python counts above are from the 2026-11-07 run; those trees were not changed in the dependency update.
+`tests/fake-docker.sh` is a helper, not a suite. The Python template tests were run again on 2026-11-08 after the dev pin moved from pytest 8.4.2 to 9.2.0. Pytest is not installed by the template images.
 
 `npm audit` on 2026-11-08, after the Vitest 5 and `@hono/node-server` 2.1.6 upgrades: the Obsidian TypeScript MCP and `static-vite` report no advisories. The Hono and Next templates that still depend on `drizzle-kit` 0.31 report 4 moderate findings, all from `drizzle-kit` → `@esbuild-kit` → `esbuild` 0.18.20. That copy of esbuild is the dependency's bundler, not a server this repository starts. The fix npm offers is a downgrade to `drizzle-kit` 0.18.1, which I did not take. Run `npm audit` yourself.
 
