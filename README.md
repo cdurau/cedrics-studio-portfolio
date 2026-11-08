@@ -41,7 +41,7 @@ That command prints a `python-service` decision and the nine brief flags.
 
 ## Stack
 
-Python 3.11+ and the standard library for the workflow. TypeScript on Node.js 20+ (the VPS template typechecks on Node 22), Vitest, React 19, Hono, Better Auth 1.7.18, Drizzle, and PostgreSQL in the later templates. MCP over stdio and streamable HTTP. Shell for the deploy gate. Dockerfiles are in the Python MCP server and the templates. This CI does not build images or contact a private network.
+Python 3.11+ and the standard library for the workflow. TypeScript on Node.js 20+ for the bundled MCP server, and Node.js 22 for the template tests (Vitest 5). React 19, Hono, `@hono/node-server` 2.1.6, Better Auth 1.7.18, Drizzle, and PostgreSQL in the later templates. MCP over stdio and streamable HTTP. Shell for the deploy gate. Dockerfiles are in the Python MCP server and the templates. This CI does not build images or contact a private network.
 
 ## Review and deploy
 
@@ -51,7 +51,7 @@ In `platform/studio-deploy/`, placeholders such as `__APP_SLUG__` and `__TRUST_D
 
 ## Tests
 
-Checked on this tree on 2026-11-07. The root CI workflow [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs the same commands on GitHub-hosted runners, with `contents: read` and no credentials.
+Checked on this tree on 2026-11-08. The root CI workflow [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs these commands on GitHub-hosted runners, with `contents: read` and no credentials. Integration scripts and image builds stay local: they need a database or Docker.
 
 | Command | Result |
 | --- | --- |
@@ -62,11 +62,14 @@ Checked on this tree on 2026-11-07. The root CI workflow [`.github/workflows/ci.
 | `npm test` and `npm run typecheck` in `templates/vps-app` | 16 passed, typecheck clean |
 | `npm test` and `npm run typecheck` in `templates/react-hono-postgres-v2` | 27 passed, typecheck clean |
 | `npm test` in `templates/react-hono-postgres-v2-user-app` | 15 passed, 1 skipped |
+| `npm test` and `npm run typecheck` in `templates/react-hono-postgres` and `templates/react-hono-sqlite` | 7 passed and 10 passed, typecheck clean |
+| `npm test` and `npm run typecheck` in `templates/next-postgres` | 9 passed, typecheck clean |
+| `npm test` and `npm run build` in `templates/static-vite` | 7 passed, bundle written |
 | `PYTHONPATH=. pytest` in `templates/python-fastapi` and `templates/python-service` | 5 passed and 4 passed |
 
-Integration scripts and image builds were not run. They need a database or Docker. `tests/fake-docker.sh` is a helper, not a suite.
+`tests/fake-docker.sh` is a helper, not a suite. The Python counts above are from the 2026-11-07 run; those trees were not changed in the dependency update.
 
-`npm audit` after the dependency update, without taking major upgrades: Obsidian TypeScript MCP 3 (1 moderate, 2 critical), VPS app 8 (6 moderate, 2 critical), React/Hono Postgres v2 8 (6 moderate, 2 critical). The remaining critical findings are Vitest 3 and tinypool, which are test tooling. The fix npm offers is Vitest 5. I did not take that major upgrade. Details are not repeated as a security guarantee: run `npm audit` yourself.
+`npm audit` on 2026-11-08, after the Vitest 5 and `@hono/node-server` 2.1.6 upgrades: the Obsidian TypeScript MCP and `static-vite` report no advisories. The Hono and Next templates that still depend on `drizzle-kit` 0.31 report 4 moderate findings, all from `drizzle-kit` → `@esbuild-kit` → `esbuild` 0.18.20. That copy of esbuild is the dependency's bundler, not a server this repository starts. The fix npm offers is a downgrade to `drizzle-kit` 0.18.1, which I did not take. Run `npm audit` yourself.
 
 ## History
 
