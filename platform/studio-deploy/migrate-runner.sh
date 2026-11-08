@@ -92,8 +92,26 @@ die() { printf '[migrate-runner] FAIL: %s\n' "$*" >&2; exit 1; }
 #      legitimate reason for one on an installed trust path; and
 #   2. every check uses `stat -L`, so if a link ever does appear, the property
 #      measured is the one that decides what actually runs.
-file_mode()  { stat -L -f '%Lp' "$1" 2>/dev/null || stat -L -c '%a' "$1"; }
-file_owner() { stat -L -f '%u'  "$1" 2>/dev/null || stat -L -c '%u'  "$1"; }
+# GNU stat treats -f as --file-system and exits 0, so a BSD-format attempt
+# cannot be the probe. Choose the format flag this stat accepts. Both forms
+# follow links. A result that is not an octal mode or a numeric uid is a
+# failed check, not a pass.
+# Closing braces stay on the statement line. tests/trusted-path.sh treats the
+# first line that is only "}" as the end of this whole copied block.
+# Detect at call time. These scripts pin PATH after this block is defined, so
+# a probe at load time can see a different stat than the check itself.
+file_mode() {
+  local mode
+  if stat -c '%u' / >/dev/null 2>&1; then mode="$(stat -L -c '%a' "$1")" || die "cannot stat mode of $1"
+  else mode="$(stat -L -f '%Lp' "$1")" || die "cannot stat mode of $1"; fi
+  case "$mode" in ""|*[!0-7]*) die "stat did not return an octal mode for $1" ;; esac
+  printf '%s\n' "$mode"; }
+file_owner() {
+  local owner
+  if stat -c '%u' / >/dev/null 2>&1; then owner="$(stat -L -c '%u' "$1")" || die "cannot stat owner of $1"
+  else owner="$(stat -L -f '%u' "$1")" || die "cannot stat owner of $1"; fi
+  case "$owner" in ""|*[!0-9]*) die "stat did not return a numeric uid for $1" ;; esac
+  printf '%s\n' "$owner"; }
 
 # Ownership of the FILE is not enough: a root-owned file inside a directory the
 # agent can write can be replaced wholesale (unlink + create), so the guarantee

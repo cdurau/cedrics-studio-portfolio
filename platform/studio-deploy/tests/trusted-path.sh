@@ -95,9 +95,17 @@ echo "== B: the platform semantics this fix rests on =="
 mkdir -p "$WORK/b"
 printf 'payload\n' > "$WORK/b/target"
 ln -s "$WORK/b/target" "$WORK/b/link"
-lstat_uid="$(stat -f '%u' "$WORK/b/link" 2>/dev/null || stat -c '%u' "$WORK/b/link")"
-stat_uid="$(stat -L -f '%u' "$WORK/b/link" 2>/dev/null || stat -L -c '%u' "$WORK/b/link")"
-link_uid="$(stat -f '%u' "$WORK/b/link" 2>/dev/null || stat -c '%u' "$WORK/b/link")"
+# Same probe as the components: GNU stat -f exits 0 with filesystem data,
+# so it cannot be used to discover the BSD format.
+if stat -c '%u' / >/dev/null 2>&1; then
+  lstat_uid="$(stat -c '%u' "$WORK/b/link")"
+  stat_uid="$(stat -L -c '%u' "$WORK/b/link")"
+  link_uid="$(stat -c '%u' "$WORK/b/link")"
+else
+  lstat_uid="$(stat -f '%u' "$WORK/b/link")"
+  stat_uid="$(stat -L -f '%u' "$WORK/b/link")"
+  link_uid="$(stat -f '%u' "$WORK/b/link")"
+fi
 if [ "$stat_uid" = "$CURRENT_UID" ] && [ "$lstat_uid" = "$link_uid" ]; then
   pass "B) stat -L measures the target ($stat_uid), bare stat measures the link — the defect is real and the fix addresses it"
 else
