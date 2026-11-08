@@ -346,8 +346,7 @@ else
   printf 'first run argv: %s\n' "$first_run" >&2; fail=1
 fi
 
-# N2) measured 2026-09-27: the guest may not see that host path, so a bind-
-# mount under /var would arrive empty and the include step would fail closed;
+# N2) a bind-mount of the state tree can arrive empty inside the guest, and
 # mounting the login user's home would expose the separated files to containers.
 # The migration content therefore reaches psql through stdin — assert that the
 # first credential-path docker run reaches the database step and carries neither

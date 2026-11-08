@@ -95,7 +95,7 @@ file_owner() {
 # agent can write can be replaced wholesale (unlink + create), so the guarantee
 # has to cover the whole chain from `/` down — every component root-owned and
 # never group/other-writable. The same rule applies to the host's sudoers
-# targets; see the unpublished host-trust review.
+# targets. A passwordless sudo rule must not point at a path the login user can replace.
 assert_trusted_path() { # assert_trusted_path <absolute path>
   local p="$1" owner mode
   case "$p" in

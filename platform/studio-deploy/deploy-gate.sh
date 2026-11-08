@@ -30,9 +30,9 @@
 # the numeric uid is whatever the OS assigned at install time and is never
 # hard-coded, so installing with a different free uid cannot stale this check.
 #
-# The gate itself never touches the Docker socket. On this host the socket is
-# `login-user:login-group` mode 600, so reaching it here would hand the gate the login
-# user's authority and undo the separation. Instead exactly two operations are
+# The gate itself never touches the Docker socket. The socket is owned by the
+# login user, mode 600, so reaching it here would hand the gate the login user's
+# authority and undo the separation. Instead exactly two operations are
 # delegated through `sudo -n` to root-owned, ARGUMENT-FREE helpers:
 #   * <slug>-migrate-runner   — the ONE Docker write (the owner migration)
 #   * <slug>-verify-container — READ-ONLY container ps/inspect, facts only
@@ -140,7 +140,7 @@ file_owner() {
 # agent can write can be replaced wholesale (unlink + create), so the guarantee
 # has to cover the whole chain from `/` down — every component root-owned and
 # never group/other-writable. The same rule applies to the host's sudoers
-# targets; see the unpublished host-trust review.
+# targets. A passwordless sudo rule must not point at a path the login user can replace.
 assert_trusted_path() { # assert_trusted_path <absolute path>
   local p="$1" owner mode
   case "$p" in

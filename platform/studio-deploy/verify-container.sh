@@ -7,9 +7,9 @@
 # WHY THIS EXISTS (S0-13, dedicated-deploy-user model)
 # ---------------------------------------------------
 # The gate now runs as the dedicated deploy user (`studio-deploy`) and holds NO
-# Docker access at all. On this host that is necessary and not a choice: the
-# Docker socket is `login-user:login-group` mode 600, so giving the deploy user the socket
-# would either hand it the login user's credentials or require adding it to a group that
+# Docker access at all. That is necessary and not a choice: the Docker socket is
+# owned by the login user, mode 600, so giving the deploy user the socket would
+# either hand it the login user's credentials or require adding it to a group that
 # reaches an owner-capable daemon — i.e. it would re-flatten the uid boundary the
 # deploy user exists to create.
 #
@@ -96,7 +96,7 @@ file_owner() {
 # agent can write can be replaced wholesale (unlink + create), so the guarantee
 # has to cover the whole chain from `/` down — every component root-owned and
 # never group/other-writable. The same rule applies to the host's sudoers
-# targets; see the unpublished host-trust review.
+# targets. A passwordless sudo rule must not point at a path the login user can replace.
 assert_trusted_path() { # assert_trusted_path <absolute path>
   local p="$1" owner mode
   case "$p" in

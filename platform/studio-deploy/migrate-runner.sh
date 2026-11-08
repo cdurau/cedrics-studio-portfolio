@@ -117,7 +117,7 @@ file_owner() {
 # agent can write can be replaced wholesale (unlink + create), so the guarantee
 # has to cover the whole chain from `/` down — every component root-owned and
 # never group/other-writable. The same rule applies to the host's sudoers
-# targets; see the unpublished host-trust review.
+# targets. A passwordless sudo rule must not point at a path the login user can replace.
 assert_trusted_path() { # assert_trusted_path <absolute path>
   local p="$1" owner mode
   case "$p" in
@@ -302,13 +302,11 @@ export PGDATABASE="${PGDATABASE%%\?*}"
   || die "could not parse MIGRATION_DATABASE_URL (need user:pass@host:port/db)"
 
 # Migration content is STREAMED THROUGH STDIN, not bind-mounted.
-# Measured 2026-09-27 on the host: the guest mounts only the login user's
-# home (an unshared host path), so a `-v <STATE_DIR>/../...`
-# bind-mount would arrive EMPTY inside the container and every migration would
-# fail closed at the include step. Mounting the login user's home instead would
-# expose the very files the deploy-user model separates to every container.
-# Streaming keeps the properties that mattered: the content arrives exactly as
-# hashed, inside the same transaction, and never on a command line.
+# A bind-mount of the state tree is not a reliable input: a guest may not share
+# that host path, so the mount can arrive empty and the include step fails closed.
+# Mounting the login user's home instead would expose the files the deploy-user
+# model separates. Streaming keeps the content exactly as hashed, inside the same
+# transaction, and never on a command line.
 psql_in() { # psql_in [psql args...] — SQL arrives on stdin when needed
   "$DOCKER_BIN" -H "$DOCKER_HOST" run --rm -i --network "$DB_NETWORK" \
     -e PGHOST -e PGPORT -e PGUSER -e PGPASSWORD -e PGDATABASE \
@@ -350,11 +348,10 @@ while IFS=' ' read -r tag hash; do
   log "applying $tag"
   file="$SNAPSHOT_DIR/$tag.sql"
   [ -r "$file" ] || die "validated snapshot for migration $tag is missing"
-  # The migration text is streamed on stdin inside the transaction (the guest
-  # must not receive the login home — a bind-mount under the state tree would
-  # arrive empty, see the psql_in comment above); the bookkeeping values are
-  # passed as psql variables, so no migration content is ever interpolated into a
-  # command line.
+  # The migration text is streamed on stdin inside the transaction (a bind-mount
+  # of the state tree can arrive empty, see the psql_in comment above). The
+  # bookkeeping values are passed as psql variables, so no migration content is
+  # ever interpolated into a command line.
   {
     printf 'BEGIN;\n\n'
     cat "$file"

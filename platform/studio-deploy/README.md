@@ -230,13 +230,11 @@ there and not in the login account.
 
 ## The dedicated deploy user (S0-13)
 
-Installed on the host on 2026-09-27 and proven through one complete live deploy.
-An independent re-review found two migration-runner defects afterward; the
-corrected source in this directory therefore still requires an owner-reviewed
-re-install and a fresh live migration proof. See
-`the unpublished deploy-user review` for the ownership model
-and `the unpublished cutover review` for the
-remediation status.
+The account model was installed and proven with one live deploy. An independent
+re-review found two migration-runner defects afterward; the corrected source in
+this directory therefore still requires an owner-reviewed re-install and a fresh
+live migration proof. The ownership rules are the ones below. Private review
+notes are not part of this repository.
 
 The forced command runs as whichever uid owns the `authorized_keys` entry. While
 that was the login user, mode `600` on `migrate.env` protected nothing: every
@@ -246,16 +244,14 @@ deploy path onto a separate, hidden service account:
 | Item | Value |
 | --- | --- |
 | Account | `studio-deploy` (hidden service account; identity is the NAME) |
-| `UniqueID` / `gid` | **resolved at install time** — pick a free uid/gid immediately before creating the account and record it; do not assume a fixed number (a free uid on one machine, not a constant) |
+| `UniqueID` / `gid` | **resolved at install time** — pick a free uid and gid immediately before creating the account. Do not reuse the login uid, and do not hard-code a number that was free on one machine. |
 | Home | `/var/studio-deploy`, mode 700 |
 | Interactive rights | none (no admin rights; key-only auth; `restrict`) |
 
-Why the uid is not written down: no account exists yet, and a uid that is free
-today can be taken by another tool tomorrow. The components therefore check the
-**account name**, and the uid is compared only against the uid the process
-already is (owner checks), never against a stored number. Verify the choice
-immediately before installing with `dscl . -list /Users UniqueID | sort -k2 -n | tail`
-and `dscl . -list /Groups PrimaryGroupID | sort -k2 -n | tail`.
+Why the uid is not written down: a uid that is free today can be taken by another
+tool tomorrow. The components therefore check the **account name**, and the uid
+is compared only against the uid the process already is (owner checks), never
+against a stored number.
 
 Two consequences are worth stating plainly:
 
@@ -269,9 +265,9 @@ Two consequences are worth stating plainly:
   the agent's identity. The identity is the account NAME; the uid is whatever the
   OS assigned at install time, so no numeric uid is hard-coded anywhere.
 
-The gate holds no Docker access. On this host the Docker socket is
-`login-user:login-group` mode 600, so reaching it from the gate would hand the deploy path
-the login user's authority and undo the separation. Instead exactly two
+The gate holds no Docker access. The Docker socket is owned by the login user,
+mode 600, so reaching it from the gate would hand the deploy path the login
+user's authority and undo the separation. Instead exactly two
 operations are delegated, through `sudo -n`, to root-owned, argument-free
 helpers, and the `/etc/sudoers.d/studio-deploy` entries use the empty-argument
 form so sudo refuses argv:
@@ -359,8 +355,8 @@ sudo dseditgroup -o edit -a studio-deploy -t user com.apple.access_ssh
 ### Choosing `__DOCKER_BIN__` — install a root-owned copy
 
 `__DOCKER_BIN__` is what a **root** helper executes, so it is part of the trusted
-computing base and the choice must be explicit, never left to `PATH`. Measured on
-the host (2026-09-22), **neither** installed docker CLI qualifies on its own:
+computing base and the choice must be explicit, never left to `PATH`. Two common
+macOS installs both fail that check:
 
 | candidate | measured | verdict |
 | --- | --- | --- |
@@ -376,7 +372,7 @@ login-user-owned, so the production-path check refuses it and the helper cannot
 run at all.
 
 **So pin a root-owned copy under the trust directory** (installed in step 1
-below). It is the only option on this host whose whole path chain is root-owned:
+below). It is the option whose whole path chain is root-owned:
 
 ```
 __DOCKER_BIN__ = /usr/local/libexec/studio-deploy/docker
@@ -410,30 +406,28 @@ default) — if its path chain is not root-owned.
 
 ## The OS user model this relies on
 
-Measured on the host 2026-09-22 (third round measured 2026-09-21), because the
-boundary is only as good as the uids around it.
+The boundary is only as good as the uids around it. The earlier shape is why
+S0-13 exists.
 
-**Before (the state the third round documented, and the reason S0-13 exists):**
+**Before:**
 
-| Fact | Measured value |
+| Fact | Shape that fails |
 | --- | --- |
-| Forced command runs as | the login user (`the login account`), from `~/.ssh/authorized_keys` |
-| `migrate.env`, `secrets.env` | `login-user:login-group`, mode `600` |
-| `coolify_token` | not present (owner step), expected `600` |
-| Docker context | `currentContext: devbox`; socket `the local Docker socket`, `login-user:login-group` 600 |
-| Deploy clone | `~/.local/state/ua-smoke/deploy-clone`, owned by the login user |
-| Trusted components | `/usr/local/libexec/studio-deploy/` (root:wheel) — **not yet installed** |
-| Same-uid processes | Node/Python agent processes and the runtime repo run as the same `login-user` |
-| Dedicated `ci`/`deploy` user | none exists yet |
-| Login user's sudo | `(ALL) ALL` with **password required** — but see the blocker below: one NOPASSWD devbox rule targets a **login-user-writable** binary, so the login uid reaches root without a password |
+| Forced command runs as | the login user, from that account's `authorized_keys` |
+| `migrate.env`, `secrets.env` | owned by the login user, mode `600`, so every agent process can read them |
+| `coolify_token` | an owner step; expected mode `600` and not owned by the login user |
+| Docker socket | owned by the login user, mode `600`. A named context is not a trust boundary: context files live under that user's `~/.docker` |
+| Deploy clone | owned by the login user |
+| Trusted components | root-owned under the trust directory, and not yet installed in that earlier shape |
+| Same-uid processes | the coding agent and the runtime repo share the login uid |
+| Dedicated deploy user | absent |
+| Login user's sudo | ordinary rules ask for a password, which does nothing if any `NOPASSWD` rule points at a binary the login user can replace |
 
-Current target model (account installed 2026-09-27): the deploy path runs as
-`studio-deploy`. The Coolify token is mode 600 and owned by `studio-deploy`; the
-more privileged owner DB credential is root-owned mode 600 under the trust
-directory and is read only by the root migration helper. Both are unreadable to
-`login-user` (the login uid) through ordinary file permissions. The uid of
-`studio-deploy` is whatever the OS assigns at install time; the separation
-property depends on it differing from the login uid, not on any particular value.
+Target model: the deploy path runs as `studio-deploy`. The Coolify token is mode
+600 and owned by `studio-deploy`. The owner DB credential is root-owned mode 600
+under the trust directory and is read only by the root migration helper. Neither
+is readable by the login user through ordinary file permissions. The separation
+property is that the two uids differ, not any particular number.
 
 What the file-integrity properties above (root-owned gate, literal trust path,
 approval hashes) do **not** do is change who can *read* a file owned by the uid
@@ -443,34 +437,31 @@ the account is the architectural change rather than another gate check.
 ### What the uid separation does NOT do (read this before installing)
 
 The separation is real for **file confidentiality**, and that is all it is. Two
-measured facts bound it, and neither is closed by anything in this directory:
+facts bound it, and neither is closed by anything in this directory:
 
 1. **The agent's uid controls the Docker daemon that runs the production
-   database.** The socket is `login-user:login-group` 600 and every agent process runs as
-   `login-user`, so the owner DB credential is not the only way to the data — whoever
-   holds the socket reaches the Postgres container directly. Moving the owner DB
-   credential under the root-owned trust directory therefore raises the cost of
-   reading a *file*; it does not
-   make the database unreachable from a compromised agent. By the same argument,
-   `<slug>-verify-container` is an honest proof against *Coolify* misreporting a
-   deploy, but **not** against an adversary who controls the daemon: container
-   labels and health can be forged by anyone who can start containers.
+   database.** The socket is owned by the login user, mode 600, and every agent
+   process runs as that user, so the owner DB credential is not the only way to
+   the data — whoever holds the socket reaches the Postgres container directly.
+   Moving the owner DB credential under the root-owned trust directory therefore
+   raises the cost of reading a *file*; it does not make the database unreachable
+   from a compromised agent. By the same argument, `<slug>-verify-container` is an
+   honest proof against *Coolify* misreporting a deploy, but **not** against an
+   adversary who controls the daemon: container labels and health can be forged by
+   anyone who can start containers.
 2. ~~**The login uid can become root without a password.**~~ **Remediated
-   2026-09-22** (`a login-user-writable helper` was login-user-writable while a
-   `%login-group` NOPASSWD rule pointed at it; it is now `root:wheel` and the
-   unprivileged re-run of `the host sudo-target check` returns PASS).
-   Until that fix, root read `/var/studio-deploy/…` regardless of mode and the
-   uid boundary was void. Full before/after evidence:
-   `the unpublished host-trust review` §H-1.5.
-   Re-run that script after any `brew upgrade` — a package update can restore a
-   bad ownership.
+   2026-09-22.** A `NOPASSWD` rule pointed at a helper the login user could write.
+   That helper is now `root:wheel`, and a passwordless rule must not target a path
+   the login user can replace. Until that class of rule is gone, root can read
+   `/var/studio-deploy/…` regardless of mode and the uid boundary is void.
+   Re-check sudo targets after any package upgrade — an update can restore a bad
+   ownership.
 
 Blocker 1 remains, and must be understood and accepted — or removed by moving
-the coding agent off the login account
-(`the unpublished agent-migration review`) — **before** the
-installation steps below are worth running. Until then, installing this raises
-the bar against accident and against a weak attacker; it does not establish the
-boundary the design language implies.
+the coding agent off the login account — **before** the installation steps below
+are worth running. Until then, installing this raises the bar against accident
+and against a weak attacker; it does not establish the boundary the design
+language implies.
 
 Smaller residuals: the deploy user can still invoke its two argument-free helpers
 — that is what they are for — and the sudoers empty-argument form is a sudo(8)
@@ -516,17 +507,15 @@ its target.
 
 ## Open items
 
-- The account, forced command, sudoers rules, CI key path and original trusted
-  components were installed on 2026-09-27. The corrected gate and runner in this
-  revision are **not yet installed**; owner review and `sudo install` remain.
+- Nothing in this tree installs itself. The corrected gate and runner require
+  an owner review and `sudo install` before they are the bytes on a host.
 - Move the owner DB credential out of deploy-user state to
   `/usr/local/libexec/studio-deploy/credentials/<slug>.env` as root:wheel 0600,
   then remove the superseded state copy after the corrected runner is live.
-- Re-run the gate with a fresh pending approved migration to prove that each tag
-  receives its own SQL bytes; the 2026-09-27 live run skipped all five existing
-  migrations and therefore could not expose the stale-file defect.
-- The original S0-13 live acceptance gaps C2, C3, C6-API and the two-client
-  rate-limit proof remain open; this deploy-chain evidence does not close them.
+- A live run that skips migrations already applied does not prove that each tag
+  receives its own SQL bytes. Prove that with a fresh pending migration.
+- Acceptance proofs outside this deploy chain, including a two-client rate-limit
+  proof, remain open. This evidence does not close them.
 - `--verify-only <gate> <full-sha>` answers "is what is running actually this app
   at this commit?" at any time, reads no credential, and mutates nothing.
 - The sudoers empty-argument form (`""`) is a sudo(8) behaviour: validate the
